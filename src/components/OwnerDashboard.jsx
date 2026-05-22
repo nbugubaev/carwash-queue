@@ -71,8 +71,8 @@ export default function OwnerDashboard({ onLogout }) {
       const W = 500;
       const QR_SIZE = 340;
       const PAD = 40;
-      const TOP_H = 140;
-      const BOT_H = 90;
+      const TOP_H = 130;
+      const BOT_H = 80;
       const H = TOP_H + QR_SIZE + BOT_H;
 
       const tempCanvas = document.createElement('canvas');
@@ -88,104 +88,67 @@ export default function OwnerDashboard({ onLogout }) {
           canvas.height = H;
           const ctx = canvas.getContext('2d');
 
-          // ── Background: white ──
+          // White background
           ctx.fillStyle = '#FFFFFF';
           ctx.fillRect(0, 0, W, H);
 
-          // ── Top section: gradient indigo background ──
+          // Top gradient
           const grad = ctx.createLinearGradient(0, 0, W, TOP_H);
           grad.addColorStop(0, '#4338CA');
           grad.addColorStop(1, '#6366F1');
           ctx.fillStyle = grad;
           ctx.fillRect(0, 0, W, TOP_H);
 
-          // Decorative circles top-right
+          // Decorative circles
           ctx.globalAlpha = 0.15;
-          ctx.beginPath();
-          ctx.arc(W - 20, 0, 90, 0, Math.PI * 2);
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fill();
-          ctx.beginPath();
-          ctx.arc(W + 10, TOP_H, 70, 0, Math.PI * 2);
+          ctx.beginPath(); ctx.arc(W - 20, 10, 90, 0, Math.PI * 2);
+          ctx.fillStyle = '#FFFFFF'; ctx.fill();
+          ctx.beginPath(); ctx.arc(30, TOP_H + 10, 60, 0, Math.PI * 2);
           ctx.fill();
           ctx.globalAlpha = 1.0;
 
-          // Car emoji / icon area — small white pill
-          ctx.fillStyle = 'rgba(255,255,255,0.2)';
-          roundRect(ctx, W/2 - 44, 18, 88, 30, 15);
-          ctx.fill();
-          ctx.fillStyle = '#FFFFFF';
-          ctx.font = '16px Arial';
+          // Business name (top, smaller)
+          ctx.fillStyle = 'rgba(255,255,255,0.85)';
+          ctx.font = '500 18px Arial, sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText('🚗  АВТОМОЙКА', W / 2, 38);
+          ctx.fillText((business.name || 'Автомойка').toUpperCase(), W / 2, 36);
 
           // Main headline
           ctx.fillStyle = '#FFFFFF';
-          ctx.font = 'bold 34px Arial, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText('У НАС', W / 2, 82);
-
-          ctx.font = 'bold 30px Arial, sans-serif';
+          ctx.font = 'bold 38px Arial, sans-serif';
+          ctx.fillText('У НАС', W / 2, 80);
+          ctx.font = 'bold 32px Arial, sans-serif';
           ctx.fillStyle = '#E0E7FF';
           ctx.fillText('ЭЛЕКТРОННАЯ ОЧЕРЕДЬ', W / 2, 118);
 
-          // ── QR code centered ──
-          const qrX = (W - QR_SIZE) / 2;
-          const qrY = TOP_H;
-
-          // White card shadow behind QR
-          ctx.shadowColor = 'rgba(0,0,0,0.12)';
-          ctx.shadowBlur = 18;
+          // QR with card shadow
+          ctx.shadowColor = 'rgba(0,0,0,0.13)';
+          ctx.shadowBlur = 20;
           ctx.shadowOffsetY = 4;
           ctx.fillStyle = '#FFFFFF';
-          roundRect(ctx, qrX - 8, qrY + 8, QR_SIZE + 16, QR_SIZE + 16, 12);
+          const qrX = (W - QR_SIZE) / 2;
+          const qrY = TOP_H;
+          ctx.beginPath();
+          ctx.roundRect(qrX - 8, qrY + 8, QR_SIZE + 16, QR_SIZE + 16, 12);
           ctx.fill();
-          ctx.shadowColor = 'transparent';
-          ctx.shadowBlur = 0;
-          ctx.shadowOffsetY = 0;
+          ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
 
           ctx.drawImage(tempCanvas, qrX, qrY + 16, QR_SIZE, QR_SIZE);
 
-          // ── Bottom section ──
+          // Bottom
           const botY = TOP_H + QR_SIZE + 24;
-
-          // Divider line
-          ctx.strokeStyle = '#E5E7EB';
-          ctx.lineWidth = 1;
+          ctx.strokeStyle = '#E5E7EB'; ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(PAD, botY - 8);
-          ctx.lineTo(W - PAD, botY - 8);
+          ctx.moveTo(PAD, botY - 8); ctx.lineTo(W - PAD, botY - 8);
           ctx.stroke();
 
-          // Business name
-          ctx.fillStyle = '#1F2937';
-          ctx.font = 'bold 22px Arial, sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(business.name || 'Автомойка', W / 2, botY + 20);
-
-          // Subtitle
           ctx.fillStyle = '#6B7280';
           ctx.font = '16px Arial, sans-serif';
-          ctx.fillText('Сканируйте QR-код для записи в очередь', W / 2, botY + 48);
+          ctx.fillText('Сканируйте QR-код для записи в очередь', W / 2, botY + 40);
         }
       );
     }
   }, [activeTab, business]);
-
-  // Helper: draw rounded rectangle path
-  function roundRect(ctx, x, y, w, h, r) {
-    ctx.beginPath();
-    ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
-    ctx.closePath();
-  }
 
   // Calculate Analytics when business changes or range changes
   useEffect(() => {
@@ -794,20 +757,6 @@ export default function OwnerDashboard({ onLogout }) {
             <h3 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>QR-код для печати</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>Поместите у въезда или на стойке администрации</p>
             
-            <div style={{
-              margin: '1rem 0 0.5rem 0',
-              padding: '0.6rem 1.25rem',
-              background: 'rgba(99,102,241,0.12)',
-              border: '1.5px solid var(--accent-color)',
-              borderRadius: 'var(--radius-sm)',
-              fontSize: '1rem',
-              fontWeight: '800',
-              letterSpacing: '0.06em',
-              color: 'white',
-              textTransform: 'uppercase'
-            }}>
-              У НАС Электронная очередь
-            </div>
             <div className="qr-preview-container">
               <canvas ref={qrCanvasRef}></canvas>
             </div>
