@@ -458,44 +458,36 @@ export default function ClientPanel({ businessId }) {
           </div>
         </div>
 
-        {/* Queue context: who is before/after me */}
-        {isWaiting && queueContext.length > 0 && (
+        {/* Queue list with highlight */}
+        {isWaiting && waitingQueue.length > 0 && (
           <div className="glass-panel" style={{ marginBottom: '2rem' }}>
-            <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Очередь рядом с вами</h3>
+            <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Текущая очередь</h3>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {queueContext.map((item, idx) => {
-                const absolutePos = contextStart + idx;
+              {waitingQueue.map((item, idx) => {
                 const isMe = item.id === myTicket.id;
-                const isBefore = absolutePos < myAbsoluteIndex;
                 return (
                   <div key={item.id} style={{
                     display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                     padding: '0.65rem 1rem',
                     borderRadius: 'var(--radius-sm)',
-                    background: isMe ? 'rgba(99,102,241,0.18)' : isBefore ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.03)',
+                    background: isMe ? 'rgba(99,102,241,0.18)' : 'rgba(255,255,255,0.04)',
                     border: isMe ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                       <span style={{ fontWeight: '700', fontSize: '0.85rem', color: isMe ? 'var(--accent-color)' : 'var(--text-muted)', minWidth: '2rem' }}>
-                        №{absolutePos + 1}
+                        №{idx + 1}
                       </span>
                       <span style={{ fontFamily: 'monospace', fontWeight: isMe ? '800' : '600', fontSize: isMe ? '1.05rem' : '0.95rem', color: isMe ? 'white' : 'var(--text-secondary)', letterSpacing: '0.05em' }}>
                         {item.plate_number}
                       </span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      {isMe && <span style={{ fontSize: '0.7rem', background: 'var(--accent-color)', color: 'white', borderRadius: '999px', padding: '0.15rem 0.55rem', fontWeight: '700' }}>ВЫ</span>}
-                      {!isMe && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isBefore ? 'впереди' : 'сзади'}</span>}
-                    </div>
+                    {isMe && (
+                      <span style={{ fontSize: '0.7rem', background: 'var(--accent-color)', color: 'white', borderRadius: '999px', padding: '0.15rem 0.55rem', fontWeight: '700' }}>ВЫ</span>
+                    )}
                   </div>
                 );
               })}
             </div>
-            {waitingQueue.length > 5 && (
-              <p style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
-                Всего в очереди: {waitingQueue.length} машин
-              </p>
-            )}
           </div>
         )}
 
@@ -588,6 +580,43 @@ export default function ClientPanel({ businessId }) {
           </p>
         </div>
       </div>
+
+      {/* Queue list */}
+      {waitingQueue.length > 0 && (
+        <div className="glass-panel" style={{ marginBottom: '2rem' }}>
+          <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>
+            Текущая очередь
+          </h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            {waitingQueue.map((item, idx) => {
+              const isMe = myTicket && item.id === myTicket.id;
+              return (
+                <div key={item.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '0.65rem 1rem',
+                  borderRadius: 'var(--radius-sm)',
+                  background: isMe ? 'rgba(99,102,241,0.18)' : 'rgba(255,255,255,0.04)',
+                  border: isMe ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <span style={{ fontWeight: '700', fontSize: '0.85rem', color: isMe ? 'var(--accent-color)' : 'var(--text-muted)', minWidth: '2rem' }}>
+                      №{idx + 1}
+                    </span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: isMe ? '800' : '600', fontSize: isMe ? '1.05rem' : '0.95rem', color: isMe ? 'white' : 'var(--text-secondary)', letterSpacing: '0.05em' }}>
+                      {item.plate_number}
+                    </span>
+                  </div>
+                  {isMe && (
+                    <span style={{ fontSize: '0.7rem', background: 'var(--accent-color)', color: 'white', borderRadius: '999px', padding: '0.15rem 0.55rem', fontWeight: '700' }}>
+                      ВЫ
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Registration Form */}
       <div className="glass-panel">
