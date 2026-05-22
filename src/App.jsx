@@ -4,7 +4,7 @@ import SupabaseConfig from './components/SupabaseConfig';
 import OwnerDashboard from './components/OwnerDashboard';
 import OperatorPanel from './components/OperatorPanel';
 import ClientPanel from './components/ClientPanel';
-import { Car, Shield, Clock, TrendingUp, QrCode, BarChart2, CheckCircle, ArrowRight, ChevronDown, Smartphone, Users, Zap } from 'lucide-react';
+import { Car, Shield, Clock, TrendingUp, QrCode, BarChart2, CheckCircle, ArrowRight, ChevronDown, Smartphone, Users, Zap, MapPin } from 'lucide-react';
 
 // ── Landing page sections ──────────────────────────────────────────────────
 
@@ -93,6 +93,7 @@ function Benefits() {
     { icon: <QrCode size={22} />, title: 'Запуск за 5 минут', desc: 'Распечатайте QR-код, повесьте у въезда. Никакого оборудования, никаких приложений для клиента.' },
     { icon: <Smartphone size={22} />, title: 'Работает на любом телефоне', desc: 'Клиент открывает обычный браузер — никаких скачиваний. Оператор работает с планшета или телефона.' },
     { icon: <CheckCircle size={22} />, title: 'Подтверждение присутствия', desc: 'Система автоматически проверяет, что клиент на месте. Если не ответил — следующий в очереди.' },
+    { icon: <MapPin size={22} />, title: 'Очередь прямо из 2ГИС и Яндекс Карт', desc: 'Добавьте ссылку на очередь в профиль мойки на 2ГИС, Яндекс Картах или Google Maps — клиент встаёт в очередь ещё по дороге, не теряя время у въезда.' },
   ];
 
   return (
