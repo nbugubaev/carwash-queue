@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { getSupabase } from '../supabase';
 import { 
-  Car, Clock, Phone, CheckCircle, AlertTriangle, 
+  Car, Clock, CheckCircle, AlertTriangle, 
   MapPin, LogOut, ArrowRight, UserCheck, XCircle, RefreshCw 
 } from 'lucide-react';
 
@@ -14,7 +14,7 @@ export default function ClientPanel({ businessId }) {
   
   // Registration Form State
   const [plateNumber, setPlateNumber] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
+
   const [submitting, setSubmitting] = useState(false);
 
   // States for alerts
@@ -203,7 +203,7 @@ export default function ClientPanel({ businessId }) {
         .insert([{
           business_id: businessId,
           plate_number: plateNumber.trim().toUpperCase(),
-          phone_number: phoneNumber.trim() || null,
+          phone_number: null,
           status: 'waiting',
           presence_confirmed: false
         }])
@@ -276,7 +276,6 @@ export default function ClientPanel({ businessId }) {
     setMyTicket(null);
     setPresenceAlertTriggered(false);
     setPlateNumber('');
-    setPhoneNumber('');
   };
 
   // CALCULATE queue variables
@@ -352,6 +351,12 @@ export default function ClientPanel({ businessId }) {
   if (myTicket) {
     const isWaiting = myTicket.status === 'waiting';
     const isInBox = myTicket.status === 'in_box';
+
+    // Queue context: 2 before me, me, 2 after me
+    const myAbsoluteIndex = waitingQueue.findIndex(item => item.id === myTicket.id);
+    const contextStart = Math.max(0, myAbsoluteIndex - 2);
+    const contextEnd = Math.min(waitingQueue.length - 1, myAbsoluteIndex + 2);
+    const queueContext = waitingQueue.slice(contextStart, contextEnd + 1);
 
     // Calculate progress bar steps
     // Steps: 1 (In Queue) -> 2 (Prepare/Ready) -> 3 (In Box) -> 4 (Done)
@@ -452,6 +457,47 @@ export default function ClientPanel({ businessId }) {
             </div>
           </div>
         </div>
+
+        {/* Queue context: who is before/after me */}
+        {isWaiting && queueContext.length > 0 && (
+          <div className="glass-panel" style={{ marginBottom: '2rem' }}>
+            <h3 style={{ fontSize: '1rem', marginBottom: '1rem', color: 'var(--text-primary)' }}>Очередь рядом с вами</h3>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+              {queueContext.map((item, idx) => {
+                const absolutePos = contextStart + idx;
+                const isMe = item.id === myTicket.id;
+                const isBefore = absolutePos < myAbsoluteIndex;
+                return (
+                  <div key={item.id} style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    padding: '0.65rem 1rem',
+                    borderRadius: 'var(--radius-sm)',
+                    background: isMe ? 'rgba(99,102,241,0.18)' : isBefore ? 'rgba(255,255,255,0.04)' : 'rgba(255,255,255,0.03)',
+                    border: isMe ? '1.5px solid var(--accent-color)' : '1px solid var(--border-color)',
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <span style={{ fontWeight: '700', fontSize: '0.85rem', color: isMe ? 'var(--accent-color)' : 'var(--text-muted)', minWidth: '2rem' }}>
+                        №{absolutePos + 1}
+                      </span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: isMe ? '800' : '600', fontSize: isMe ? '1.05rem' : '0.95rem', color: isMe ? 'white' : 'var(--text-secondary)', letterSpacing: '0.05em' }}>
+                        {item.plate_number}
+                      </span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      {isMe && <span style={{ fontSize: '0.7rem', background: 'var(--accent-color)', color: 'white', borderRadius: '999px', padding: '0.15rem 0.55rem', fontWeight: '700' }}>ВЫ</span>}
+                      {!isMe && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isBefore ? 'впереди' : 'сзади'}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {waitingQueue.length > 5 && (
+              <p style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.75rem' }}>
+                Всего в очереди: {waitingQueue.length} машин
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Progress Bar */}
         <div className="glass-panel" style={{ marginBottom: '2rem' }}>
@@ -561,23 +607,6 @@ export default function ClientPanel({ businessId }) {
                 value={plateNumber}
                 onChange={(e) => setPlateNumber(e.target.value)}
                 style={{ paddingLeft: '2.5rem', textTransform: 'uppercase' }}
-              />
-            </div>
-          </div>
-
-          <div>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-              Номер телефона *
-            </label>
-            <div style={{ position: 'relative' }}>
-              <Phone size={18} style={{ position: 'absolute', left: '12px', top: '16px', color: 'var(--text-muted)' }} />
-              <input
-                type="tel"
-                required
-                placeholder="+7 (999) 888-77-66"
-                value={phoneNumber}
-                onChange={(e) => setPhoneNumber(e.target.value)}
-                style={{ paddingLeft: '2.5rem' }}
               />
             </div>
           </div>
