@@ -692,6 +692,20 @@ export default function OwnerDashboard({ onLogout }) {
             <h3 style={{ fontSize: '1.25rem', marginBottom: '0.5rem' }}>QR-код для печати</h3>
             <p style={{ color: 'var(--text-secondary)', fontSize: '0.8125rem' }}>Поместите у въезда или на стойке администрации</p>
             
+            <div style={{
+              margin: '1rem 0 0.5rem 0',
+              padding: '0.6rem 1.25rem',
+              background: 'rgba(99,102,241,0.12)',
+              border: '1.5px solid var(--accent-color)',
+              borderRadius: 'var(--radius-sm)',
+              fontSize: '1rem',
+              fontWeight: '800',
+              letterSpacing: '0.06em',
+              color: 'white',
+              textTransform: 'uppercase'
+            }}>
+              У НАС Электронная очередь
+            </div>
             <div className="qr-preview-container">
               <canvas ref={qrCanvasRef}></canvas>
             </div>
