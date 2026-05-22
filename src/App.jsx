@@ -238,14 +238,9 @@ export default function App() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontWeight: 800, fontSize: '1.05rem', fontFamily: 'var(--font-heading)' }}>
           <Car size={22} color="var(--accent-color)" /> SmartQueue
         </div>
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          <button className="btn btn-secondary" style={{ padding: '0.4rem 1rem', fontSize: '0.875rem' }} onClick={handleResetConfig}>
-            Настройки
-          </button>
-          <button className="btn btn-primary" style={{ padding: '0.4rem 1.1rem', fontSize: '0.875rem' }} onClick={goOwner}>
-            Войти в кабинет
-          </button>
-        </div>
+        <button className="btn btn-primary" style={{ padding: '0.4rem 1.1rem', fontSize: '0.875rem' }} onClick={goOwner}>
+          Войти в кабинет
+        </button>
       </nav>
 
       {/* Spacer for fixed nav */}
