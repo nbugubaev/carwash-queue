@@ -82,9 +82,6 @@ export default function App() {
             🚗 Кабинет Владельца
           </div>
           <div style={{ display: 'flex', gap: '0.75rem' }}>
-            <button className="btn btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8125rem' }} onClick={handleResetConfig}>
-              <Database size={12} /> Сбросить БД
-            </button>
             <button className="btn btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8125rem' }} onClick={() => window.location.search = ''}>
               В меню
             </button>
