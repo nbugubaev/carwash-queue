@@ -49,19 +49,7 @@ function Hero({ onEnter }) {
           </a>
         </div>
 
-        {/* Stat pills */}
-        <div style={{ display: 'flex', gap: '1.5rem', justifyContent: 'center', flexWrap: 'wrap', marginTop: '3.5rem' }}>
-          {[
-            { value: '+30%', label: 'рост выручки' },
-            { value: '0 мин', label: 'ожидания у кассы' },
-            { value: '5 мин', label: 'настройка с нуля' },
-          ].map(s => (
-            <div key={s.label} style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'var(--font-heading)', color: 'var(--accent-color)' }}>{s.value}</div>
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{s.label}</div>
-            </div>
-          ))}
-        </div>
+
       </div>
     </section>
   );
