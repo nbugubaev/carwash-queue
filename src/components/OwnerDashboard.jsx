@@ -67,59 +67,125 @@ export default function OwnerDashboard({ onLogout }) {
   useEffect(() => {
     if (activeTab === 'qr' && business && qrCanvasRef.current) {
       const clientUrl = `${window.location.origin}${window.location.pathname}?role=client&id=${business.id}`;
-      const QR_SIZE = 320;
-      const PADDING = 28;
-      const TOP_TEXT_H = 90;  // space for top text
-      const BOT_TEXT_H = 60;  // space for bottom text (business name)
-      const TOTAL_W = QR_SIZE + PADDING * 2;
-      const TOTAL_H = QR_SIZE + PADDING * 2 + TOP_TEXT_H + BOT_TEXT_H;
 
-      // Create a temp canvas for the QR only
+      const W = 500;
+      const QR_SIZE = 340;
+      const PAD = 40;
+      const TOP_H = 140;
+      const BOT_H = 90;
+      const H = TOP_H + QR_SIZE + BOT_H;
+
       const tempCanvas = document.createElement('canvas');
       QRCode.toCanvas(
         tempCanvas,
         clientUrl,
-        { width: QR_SIZE, margin: 1, color: { dark: '#111827', light: '#FFFFFF' } },
+        { width: QR_SIZE, margin: 1, color: { dark: '#1a1a2e', light: '#FFFFFF' } },
         (error) => {
           if (error) { console.error('Error generating QR code:', error); return; }
 
-          // Now draw everything onto the main canvas
           const canvas = qrCanvasRef.current;
-          canvas.width = TOTAL_W;
-          canvas.height = TOTAL_H;
+          canvas.width = W;
+          canvas.height = H;
           const ctx = canvas.getContext('2d');
 
-          // White background
+          // ── Background: white ──
           ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, TOTAL_W, TOTAL_H);
+          ctx.fillRect(0, 0, W, H);
 
-          // Top accent stripe
-          ctx.fillStyle = '#4F46E5';
-          ctx.fillRect(0, 0, TOTAL_W, TOP_TEXT_H);
+          // ── Top section: gradient indigo background ──
+          const grad = ctx.createLinearGradient(0, 0, W, TOP_H);
+          grad.addColorStop(0, '#4338CA');
+          grad.addColorStop(1, '#6366F1');
+          ctx.fillStyle = grad;
+          ctx.fillRect(0, 0, W, TOP_H);
 
-          // Top text: main promo line
+          // Decorative circles top-right
+          ctx.globalAlpha = 0.15;
+          ctx.beginPath();
+          ctx.arc(W - 20, 0, 90, 0, Math.PI * 2);
           ctx.fillStyle = '#FFFFFF';
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(W + 10, TOP_H, 70, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.globalAlpha = 1.0;
+
+          // Car emoji / icon area — small white pill
+          ctx.fillStyle = 'rgba(255,255,255,0.2)';
+          roundRect(ctx, W/2 - 44, 18, 88, 30, 15);
+          ctx.fill();
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '16px Arial';
           ctx.textAlign = 'center';
-          ctx.font = 'bold 26px Arial, sans-serif';
-          ctx.fillText('У НАС', TOTAL_W / 2, 36);
+          ctx.fillText('🚗  АВТОМОЙКА', W / 2, 38);
+
+          // Main headline
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = 'bold 34px Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText('У НАС', W / 2, 82);
+
           ctx.font = 'bold 30px Arial, sans-serif';
-          ctx.fillText('ЭЛЕКТРОННАЯ ОЧЕРЕДЬ', TOTAL_W / 2, 72);
+          ctx.fillStyle = '#E0E7FF';
+          ctx.fillText('ЭЛЕКТРОННАЯ ОЧЕРЕДЬ', W / 2, 118);
 
-          // QR code image centered
-          ctx.drawImage(tempCanvas, PADDING, TOP_TEXT_H + PADDING, QR_SIZE, QR_SIZE);
+          // ── QR code centered ──
+          const qrX = (W - QR_SIZE) / 2;
+          const qrY = TOP_H;
 
-          // Bottom: business name
-          ctx.fillStyle = '#111827';
-          ctx.font = 'bold 20px Arial, sans-serif';
-          ctx.fillText(business.name || 'Автомойка', TOTAL_W / 2, TOP_TEXT_H + PADDING + QR_SIZE + PADDING + 24);
+          // White card shadow behind QR
+          ctx.shadowColor = 'rgba(0,0,0,0.12)';
+          ctx.shadowBlur = 18;
+          ctx.shadowOffsetY = 4;
+          ctx.fillStyle = '#FFFFFF';
+          roundRect(ctx, qrX - 8, qrY + 8, QR_SIZE + 16, QR_SIZE + 16, 12);
+          ctx.fill();
+          ctx.shadowColor = 'transparent';
+          ctx.shadowBlur = 0;
+          ctx.shadowOffsetY = 0;
 
-          ctx.font = '15px Arial, sans-serif';
+          ctx.drawImage(tempCanvas, qrX, qrY + 16, QR_SIZE, QR_SIZE);
+
+          // ── Bottom section ──
+          const botY = TOP_H + QR_SIZE + 24;
+
+          // Divider line
+          ctx.strokeStyle = '#E5E7EB';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(PAD, botY - 8);
+          ctx.lineTo(W - PAD, botY - 8);
+          ctx.stroke();
+
+          // Business name
+          ctx.fillStyle = '#1F2937';
+          ctx.font = 'bold 22px Arial, sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(business.name || 'Автомойка', W / 2, botY + 20);
+
+          // Subtitle
           ctx.fillStyle = '#6B7280';
-          ctx.fillText('Сканируйте QR для записи в очередь', TOTAL_W / 2, TOP_TEXT_H + PADDING + QR_SIZE + PADDING + 48);
+          ctx.font = '16px Arial, sans-serif';
+          ctx.fillText('Сканируйте QR-код для записи в очередь', W / 2, botY + 48);
         }
       );
     }
   }, [activeTab, business]);
+
+  // Helper: draw rounded rectangle path
+  function roundRect(ctx, x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + w - r, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+    ctx.lineTo(x + w, y + h - r);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+    ctx.lineTo(x + r, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
 
   // Calculate Analytics when business changes or range changes
   useEffect(() => {
