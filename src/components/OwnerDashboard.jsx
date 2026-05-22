@@ -719,9 +719,17 @@ export default function OwnerDashboard({ onLogout }) {
         <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: '2rem' }}>
           <div className="glass-panel">
             <h3 style={{ fontSize: '1.25rem', marginBottom: '1rem' }}>Ссылки для интеграции</h3>
-            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem' }}>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1rem' }}>
               Скопируйте эти ссылки для добавления на ваши карты (2GIS, Яндекс, Google), Instagram или распечатайте QR-код.
             </p>
+
+            {/* 2GIS tip */}
+            <div style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.25)', borderRadius: 'var(--radius-sm)', padding: '0.875rem 1rem', marginBottom: '1.5rem', fontSize: '0.8125rem', lineHeight: '1.55' }}>
+              <div style={{ fontWeight: 700, color: 'var(--accent-color)', marginBottom: '0.35rem' }}>💡 Совет: добавьте ссылку в 2ГИС</div>
+              <span style={{ color: 'var(--text-secondary)' }}>
+                Вставьте ссылку панели клиента в описание вашей мойки на 2ГИС, Яндекс Картах или Google Maps — клиенты смогут встать в очередь заранее, ещё не доехав до мойки.
+              </span>
+            </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
               <div>
