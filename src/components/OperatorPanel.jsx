@@ -7,6 +7,7 @@ export default function OperatorPanel({ businessId }) {
   const supabase = getSupabase();
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [offlineBoxes, setOfflineBoxes] = useState([]);
 
   const [washing, setWashing] = useState([]);
   const [confirming, setConfirming] = useState([]);
@@ -20,11 +21,13 @@ export default function OperatorPanel({ businessId }) {
 
   // ── Вызов следующих клиентов ─────────────────────────────────────────────
 
-  const inviteNext = useCallback(async (currentWashing, currentConfirming, currentWaiting, currentBusiness) => {
+  const inviteNext = useCallback(async (currentWashing, currentConfirming, currentWaiting, currentBusiness, currentOffline) => {
     if (!supabase || !currentBusiness) return;
     try {
+      const offline = currentOffline || [];
+      const activeBoxes = currentBusiness.boxes_count - offline.length;
       const activeCount = currentWashing.length + currentConfirming.length;
-      const freeSlots = Math.max(0, currentBusiness.boxes_count - activeCount);
+      const freeSlots = Math.max(0, activeBoxes - activeCount);
       if (freeSlots <= 0 || currentWaiting.length === 0) return;
 
       const toInvite = currentWaiting.slice(0, freeSlots);
@@ -40,19 +43,16 @@ export default function OperatorPanel({ businessId }) {
     }
   }, [supabase]);
 
-  // ── Авто-отмена confirmed машин у которых истёк таймер ───────────────────
+  // ── Авто-отмена истёкших confirmed ───────────────────────────────────────
 
   const checkExpiredConfirmed = useCallback(async (currentConfirming, currentWaiting, currentBusiness) => {
     if (!supabase || !currentBusiness || currentConfirming.length === 0) return;
-
     const timeout = currentBusiness.confirmation_timeout || 180;
     const now = new Date();
     const expired = currentConfirming.filter(item => {
       if (!item.invited_at) return false;
-      const elapsed = Math.floor((now - new Date(item.invited_at)) / 1000);
-      return elapsed >= timeout;
+      return Math.floor((now - new Date(item.invited_at)) / 1000) >= timeout;
     });
-
     if (expired.length === 0) return;
 
     const cancelledAt = now.toISOString();
@@ -62,10 +62,8 @@ export default function OperatorPanel({ businessId }) {
         .update({ status: 'cancelled', cancelled_at: cancelledAt })
         .eq('id', item.id);
     }
-
-    // Вызываем следующих на освободившиеся слоты
-    const remainingConfirming = currentConfirming.filter(i => !expired.find(e => e.id === i.id));
-    await inviteNext([], remainingConfirming, currentWaiting, currentBusiness);
+    const remaining = currentConfirming.filter(i => !expired.find(e => e.id === i.id));
+    await inviteNext([], remaining, currentWaiting, currentBusiness, currentBusiness.offline_boxes || []);
   }, [supabase, inviteNext]);
 
   // ── Загрузка данных ───────────────────────────────────────────────────────
@@ -101,7 +99,7 @@ export default function OperatorPanel({ businessId }) {
       setMissed(newMissed);
 
       if (autoInvite && currentBusiness) {
-        await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness);
+        await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness, currentBusiness.offline_boxes || []);
       }
     } catch (err) {
       console.error('fetchAll error:', err);
@@ -121,7 +119,8 @@ export default function OperatorPanel({ businessId }) {
           .single();
         if (error) throw error;
         setBusiness(data);
-        await fetchAll(data, true); // autoInvite при загрузке
+        setOfflineBoxes(data.offline_boxes || []);
+        await fetchAll(data, true);
       } catch (err) {
         console.error('Error loading business:', err);
       } finally {
@@ -144,7 +143,10 @@ export default function OperatorPanel({ businessId }) {
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public', table: 'businesses',
         filter: `id=eq.${businessId}`
-      }, (payload) => setBusiness(payload.new))
+      }, (payload) => {
+        setBusiness(payload.new);
+        setOfflineBoxes(payload.new.offline_boxes || []);
+      })
       .subscribe();
 
     return () => {
@@ -153,7 +155,7 @@ export default function OperatorPanel({ businessId }) {
     };
   }, [businessId, supabase, fetchAll]);
 
-  // Живые таймеры + проверка истёкших confirmed каждые 5 секунд
+  // Живые таймеры + проверка истёкших
   useEffect(() => {
     const timer = setInterval(() => setNowTime(new Date()), 1000);
     return () => clearInterval(timer);
@@ -167,7 +169,26 @@ export default function OperatorPanel({ businessId }) {
     return () => clearInterval(checker);
   }, [confirming, waiting, business, checkExpiredConfirmed]);
 
-  // ── Действия ─────────────────────────────────────────────────────────────
+  // ── Переключение боксов ───────────────────────────────────────────────────
+
+  const handleToggleBox = async (boxNum) => {
+    const updated = offlineBoxes.includes(boxNum)
+      ? offlineBoxes.filter(n => n !== boxNum)
+      : [...offlineBoxes, boxNum];
+
+    setOfflineBoxes(updated);
+    try {
+      await supabase
+        .from('businesses')
+        .update({ offline_boxes: updated })
+        .eq('id', businessId);
+    } catch (err) {
+      console.error('Error toggling box:', err);
+      setOfflineBoxes(offlineBoxes); // откат
+    }
+  };
+
+  // ── Действия очереди ──────────────────────────────────────────────────────
 
   const handleStartWash = async (item) => {
     try {
@@ -187,9 +208,8 @@ export default function OperatorPanel({ businessId }) {
         .from('queue')
         .update({ status: 'completed', completed_at: new Date().toISOString() })
         .eq('id', confirmComplete.id);
-
       const updatedWashing = washing.filter(i => i.id !== confirmComplete.id);
-      await inviteNext(updatedWashing, confirming, waiting, business);
+      await inviteNext(updatedWashing, confirming, waiting, business, offlineBoxes);
       setConfirmComplete(null);
     } catch (err) {
       console.error('Error completing wash:', err);
@@ -263,6 +283,16 @@ export default function OperatorPanel({ businessId }) {
     );
   }
 
+  const allBoxesOffline = offlineBoxes.length >= business.boxes_count;
+
+  // Строим массив боксов
+  const boxes = Array.from({ length: business.boxes_count }, (_, i) => {
+    const num = i + 1;
+    const isOffline = offlineBoxes.includes(num);
+    const washingCar = washing.find(w => w.box_number === num);
+    return { num, isOffline, washingCar };
+  });
+
   return (
     <>
       <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
@@ -277,6 +307,70 @@ export default function OperatorPanel({ businessId }) {
             <Plus size={18} /> Добавить вручную
           </button>
         </div>
+
+        {/* ── ЗОНА 0: БОКСЫ ────────────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            Боксы
+            {allBoxesOffline && (
+              <span style={{ fontSize: '0.8rem', background: 'rgba(239,68,68,0.15)', color: 'var(--color-danger)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '999px', padding: '0.2rem 0.75rem', fontWeight: 600 }}>
+                Все отключены
+              </span>
+            )}
+          </h2>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '0.75rem' }}>
+            {boxes.map(box => {
+              const isOn = !box.isOffline;
+              return (
+                <div
+                  key={box.num}
+                  className="glass-panel"
+                  style={{
+                    padding: '1.25rem',
+                    border: `1px solid ${isOn ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                    background: isOn ? 'rgba(16,185,129,0.04)' : 'rgba(239,68,68,0.04)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 700, fontSize: '1rem' }}>Бокс {box.num}</span>
+                    {/* Свитч */}
+                    <div
+                      onClick={() => handleToggleBox(box.num)}
+                      style={{
+                        width: 44,
+                        height: 24,
+                        borderRadius: 12,
+                        background: isOn ? 'var(--color-success)' : 'rgba(239,68,68,0.6)',
+                        position: 'relative',
+                        cursor: 'pointer',
+                        transition: 'background 0.2s',
+                        flexShrink: 0,
+                      }}
+                    >
+                      <div style={{
+                        position: 'absolute',
+                        top: 3,
+                        left: isOn ? 23 : 3,
+                        width: 18,
+                        height: 18,
+                        borderRadius: '50%',
+                        background: 'white',
+                        transition: 'left 0.2s',
+                        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                      }} />
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: isOn ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                    {isOn ? '● Работает' : '● Не работает'}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
 
         {/* ── ЗОНА 1: МОЮТСЯ ───────────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
@@ -378,8 +472,7 @@ export default function OperatorPanel({ businessId }) {
         {/* ── ЗОНА 4: НЕ ОТВЕТИЛИ ──────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <AlertTriangle size={18} />
-            Не ответили ({missed.length})
+            <AlertTriangle size={18} /> Не ответили ({missed.length})
           </h2>
           {missed.length === 0 ? (
             <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>Нет пропущенных вызовов</div>
