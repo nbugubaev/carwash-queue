@@ -309,11 +309,15 @@ export default function OperatorPanel({ businessId }) {
                       <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
                         {item.plate_number}
                       </span>
-                      {countdown && (
+                      {item.presence_confirmed ? (
+                        <span style={{ fontSize: '0.9rem', color: 'var(--color-success)', fontWeight: 600 }}>
+                          ✓ Едет
+                        </span>
+                      ) : countdown ? (
                         <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>
                           осталось {countdown}
                         </span>
-                      )}
+                      ) : null}
                     </div>
                     <button
                       className="btn btn-primary"
