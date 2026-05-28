@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import { getSupabase } from '../supabase';
 import { RefreshCw, Plus, X, CheckSquare, AlertTriangle } from 'lucide-react';
@@ -18,6 +18,9 @@ export default function OperatorPanel({ businessId }) {
   const [confirmComplete, setConfirmComplete] = useState(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [plateNumber, setPlateNumber] = useState('');
+
+  // Пропускаем первый рендер при изменении offlineBoxes
+  const isFirstOfflineRender = useRef(true);
 
   // ── Вызов следующих клиентов ─────────────────────────────────────────────
 
@@ -155,6 +158,18 @@ export default function OperatorPanel({ businessId }) {
     };
   }, [businessId, supabase, fetchAll]);
 
+  // ── При включении бокса — вызываем следующего из очереди ─────────────────
+
+  useEffect(() => {
+    // Пропускаем первый рендер — при загрузке уже вызывается inviteNext в init()
+    if (isFirstOfflineRender.current) {
+      isFirstOfflineRender.current = false;
+      return;
+    }
+    if (!business || loading) return;
+    inviteNext(washing, confirming, waiting, business, offlineBoxes);
+  }, [offlineBoxes]);
+
   // Живые таймеры + проверка истёкших
   useEffect(() => {
     const timer = setInterval(() => setNowTime(new Date()), 1000);
@@ -184,7 +199,7 @@ export default function OperatorPanel({ businessId }) {
         .eq('id', businessId);
     } catch (err) {
       console.error('Error toggling box:', err);
-      setOfflineBoxes(offlineBoxes); // откат
+      setOfflineBoxes(offlineBoxes);
     }
   };
 
@@ -284,13 +299,9 @@ export default function OperatorPanel({ businessId }) {
   }
 
   const allBoxesOffline = offlineBoxes.length >= business.boxes_count;
-
-  // Строим массив боксов
   const boxes = Array.from({ length: business.boxes_count }, (_, i) => {
     const num = i + 1;
-    const isOffline = offlineBoxes.includes(num);
-    const washingCar = washing.find(w => w.box_number === num);
-    return { num, isOffline, washingCar };
+    return { num, isOffline: offlineBoxes.includes(num) };
   });
 
   return (
@@ -308,9 +319,9 @@ export default function OperatorPanel({ businessId }) {
           </button>
         </div>
 
-        {/* ── ЗОНА 0: БОКСЫ ────────────────────────────────────────────────── */}
+        {/* ── БОКСЫ ────────────────────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             Боксы
             {allBoxesOffline && (
               <span style={{ fontSize: '0.8rem', background: 'rgba(239,68,68,0.15)', color: 'var(--color-danger)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '999px', padding: '0.2rem 0.75rem', fontWeight: 600 }}>
@@ -322,44 +333,26 @@ export default function OperatorPanel({ businessId }) {
             {boxes.map(box => {
               const isOn = !box.isOffline;
               return (
-                <div
-                  key={box.num}
-                  className="glass-panel"
-                  style={{
-                    padding: '1.25rem',
-                    border: `1px solid ${isOn ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
-                    background: isOn ? 'rgba(16,185,129,0.04)' : 'rgba(239,68,68,0.04)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: '0.75rem',
-                  }}
-                >
+                <div key={box.num} className="glass-panel" style={{
+                  padding: '1.25rem',
+                  border: `1px solid ${isOn ? 'rgba(16,185,129,0.3)' : 'rgba(239,68,68,0.3)'}`,
+                  background: isOn ? 'rgba(16,185,129,0.04)' : 'rgba(239,68,68,0.04)',
+                  display: 'flex', flexDirection: 'column', gap: '0.75rem',
+                }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span style={{ fontWeight: 700, fontSize: '1rem' }}>Бокс {box.num}</span>
-                    {/* Свитч */}
                     <div
                       onClick={() => handleToggleBox(box.num)}
                       style={{
-                        width: 44,
-                        height: 24,
-                        borderRadius: 12,
+                        width: 44, height: 24, borderRadius: 12,
                         background: isOn ? 'var(--color-success)' : 'rgba(239,68,68,0.6)',
-                        position: 'relative',
-                        cursor: 'pointer',
-                        transition: 'background 0.2s',
-                        flexShrink: 0,
+                        position: 'relative', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0,
                       }}
                     >
                       <div style={{
-                        position: 'absolute',
-                        top: 3,
-                        left: isOn ? 23 : 3,
-                        width: 18,
-                        height: 18,
-                        borderRadius: '50%',
-                        background: 'white',
-                        transition: 'left 0.2s',
-                        boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                        position: 'absolute', top: 3, left: isOn ? 23 : 3,
+                        width: 18, height: 18, borderRadius: '50%', background: 'white',
+                        transition: 'left 0.2s', boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
                       }} />
                     </div>
                   </div>
@@ -372,7 +365,7 @@ export default function OperatorPanel({ businessId }) {
           </div>
         </section>
 
-        {/* ── ЗОНА 1: МОЮТСЯ ───────────────────────────────────────────────── */}
+        {/* ── МОЮТСЯ ───────────────────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
@@ -397,7 +390,7 @@ export default function OperatorPanel({ businessId }) {
           )}
         </section>
 
-        {/* ── ЗОНА 2: ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ ───────────────────────────────── */}
+        {/* ── ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ ────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-warning)', display: 'inline-block' }} />
@@ -429,7 +422,7 @@ export default function OperatorPanel({ businessId }) {
           )}
         </section>
 
-        {/* ── ЗОНА 3: ОЧЕРЕДЬ ──────────────────────────────────────────────── */}
+        {/* ── ОЧЕРЕДЬ ──────────────────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent-color)', display: 'inline-block' }} />
@@ -469,7 +462,7 @@ export default function OperatorPanel({ businessId }) {
           )}
         </section>
 
-        {/* ── ЗОНА 4: НЕ ОТВЕТИЛИ ──────────────────────────────────────────── */}
+        {/* ── НЕ ОТВЕТИЛИ ──────────────────────────────────────────────────── */}
         <section style={{ marginBottom: '2rem' }}>
           <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <AlertTriangle size={18} /> Не ответили ({missed.length})
