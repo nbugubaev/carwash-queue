@@ -1,26 +1,23 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getSupabase } from '../supabase';
-import { Car, Clock, CheckCircle, XCircle, RefreshCw, LogOut, ArrowRight, MapPin } from 'lucide-react';
+import { Car, Clock, CheckCircle, XCircle, RefreshCw, LogOut, ArrowRight, MapPin, AlertTriangle } from 'lucide-react';
 
 export default function ClientPanel({ businessId }) {
   const supabase = getSupabase();
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Тикет — восстанавливаем из localStorage при загрузке
   const [myTicket, setMyTicket] = useState(null);
   const [myQueueId, setMyQueueId] = useState(() => localStorage.getItem(`client_queue_id_${businessId}`));
   const [queueAheadCount, setQueueAheadCount] = useState(0);
 
-  // Регистрация
   const [plateNumber, setPlateNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Алерт вызова
   const [showCallAlert, setShowCallAlert] = useState(false);
   const [callCountdown, setCallCountdown] = useState(0);
+  const [timedOut, setTimedOut] = useState(false); // таймер истёк
 
-  // Модалка подтверждения отмены
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
   // ── Загрузка бизнеса ─────────────────────────────────────────────────────
@@ -72,7 +69,6 @@ export default function ClientPanel({ businessId }) {
           .single();
 
         if (error || !data) {
-          // Тикет не найден — чистим localStorage
           localStorage.removeItem(`client_queue_id_${businessId}`);
           setMyQueueId(null);
           return;
@@ -87,7 +83,7 @@ export default function ClientPanel({ businessId }) {
     restore();
   }, [myQueueId, businessId, supabase]);
 
-  // ── Подписка на изменения тикета (realtime) ───────────────────────────────
+  // ── Realtime подписка на тикет ───────────────────────────────────────────
 
   useEffect(() => {
     if (!supabase || !myTicket?.id) return;
@@ -122,9 +118,7 @@ export default function ClientPanel({ businessId }) {
     }
   }, [myTicket, businessId, supabase]);
 
-  useEffect(() => {
-    refreshAheadCount();
-  }, [refreshAheadCount]);
+  useEffect(() => { refreshAheadCount(); }, [refreshAheadCount]);
 
   useEffect(() => {
     if (!myTicket || myTicket.status !== 'waiting') return;
@@ -132,13 +126,14 @@ export default function ClientPanel({ businessId }) {
     return () => clearInterval(interval);
   }, [myTicket, refreshAheadCount]);
 
-  // ── Алерт вызова ─────────────────────────────────────────────────────────
+  // ── Алерт вызова + таймер ────────────────────────────────────────────────
 
   useEffect(() => {
     if (!myTicket || !business) return;
 
     if (myTicket.status === 'confirmed') {
       setShowCallAlert(true);
+      setTimedOut(false);
       const timeout = business.confirmation_timeout || 180;
       const invitedAt = myTicket.invited_at ? new Date(myTicket.invited_at) : new Date();
       const elapsed = Math.floor((Date.now() - invitedAt.getTime()) / 1000);
@@ -148,13 +143,37 @@ export default function ClientPanel({ businessId }) {
     }
   }, [myTicket?.status, business]);
 
+  // Таймер обратного отсчёта
   useEffect(() => {
-    if (!showCallAlert || callCountdown <= 0) return;
+    if (!showCallAlert) return;
+
+    if (callCountdown <= 0) {
+      // Таймер истёк — отменяем запись автоматически
+      handleTimeoutCancel();
+      return;
+    }
+
     const timer = setInterval(() => setCallCountdown(prev => prev - 1), 1000);
     return () => clearInterval(timer);
   }, [showCallAlert, callCountdown]);
 
   // ── Действия ─────────────────────────────────────────────────────────────
+
+  const handleTimeoutCancel = async () => {
+    if (!myTicket) return;
+    try {
+      await supabase
+        .from('queue')
+        .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
+        .eq('id', myTicket.id);
+
+      setShowCallAlert(false);
+      setTimedOut(true); // показываем экран "таймер истёк"
+      setMyTicket(prev => ({ ...prev, status: 'cancelled' }));
+    } catch (err) {
+      console.error('Error on timeout cancel:', err);
+    }
+  };
 
   const handleJoinQueue = async (e) => {
     e.preventDefault();
@@ -174,7 +193,6 @@ export default function ClientPanel({ businessId }) {
         .limit(1);
 
       if (existing && existing.length > 0) {
-        // Машина уже в очереди — восстанавливаем тикет
         localStorage.setItem(`client_queue_id_${businessId}`, existing[0].id);
         setMyQueueId(existing[0].id);
         setMyTicket(existing[0]);
@@ -182,7 +200,6 @@ export default function ClientPanel({ businessId }) {
         return;
       }
 
-      // Создаём новую запись
       const { data, error } = await supabase
         .from('queue')
         .insert([{
@@ -200,6 +217,7 @@ export default function ClientPanel({ businessId }) {
       localStorage.setItem(`client_queue_id_${businessId}`, ticketId);
       setMyQueueId(ticketId);
       setMyTicket(data[0]);
+      setTimedOut(false);
     } catch (err) {
       alert('Ошибка при записи: ' + err.message);
     } finally {
@@ -247,6 +265,7 @@ export default function ClientPanel({ businessId }) {
     setMyTicket(null);
     setPlateNumber('');
     setShowCallAlert(false);
+    setTimedOut(false);
     setQueueAheadCount(0);
   };
 
@@ -278,7 +297,28 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Мойка завершена ───────────────────────────────────────────────────────
+  // ── Экран: Таймер истёк ───────────────────────────────────────────────────
+  if (timedOut) {
+    return (
+      <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
+        <div className="glass-panel" style={{ padding: '3rem 2rem', border: '1px solid rgba(245,158,11,0.3)' }}>
+          <div style={{ color: 'var(--color-warning)', marginBottom: '1.5rem' }}>
+            <AlertTriangle size={64} style={{ margin: '0 auto' }} />
+          </div>
+          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>Время вышло</h2>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', lineHeight: 1.6 }}>
+            Ваша очередь была отменена, так как вы не успели подтвердить приезд вовремя.<br /><br />
+            Если вы уже на месте — <strong style={{ color: 'var(--text-primary)' }}>обратитесь к оператору</strong> для восстановления очереди. Или встаньте заново.
+          </p>
+          <button className="btn btn-primary btn-block" onClick={handleRegisterNew}>
+            Встать в очередь заново
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Экран: Мойка завершена ────────────────────────────────────────────────
   if (myTicket?.status === 'completed') {
     return (
       <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
@@ -298,8 +338,8 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Отменено ──────────────────────────────────────────────────────────────
-  if (myTicket?.status === 'cancelled') {
+  // ── Экран: Отменено вручную ───────────────────────────────────────────────
+  if (myTicket?.status === 'cancelled' && !timedOut) {
     return (
       <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
         <div className="glass-panel" style={{ padding: '3rem 2rem' }}>
@@ -318,7 +358,7 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Машина моется ─────────────────────────────────────────────────────────
+  // ── Экран: Машина моется ──────────────────────────────────────────────────
   if (myTicket?.status === 'in_box') {
     return (
       <div className="mobile-view animate-slide-up">
@@ -346,7 +386,7 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Ожидание / Вызов ──────────────────────────────────────────────────────
+  // ── Экран: Ожидание / Вызов ───────────────────────────────────────────────
   if (myTicket?.status === 'waiting' || myTicket?.status === 'confirmed') {
     return (
       <div className="mobile-view animate-slide-up">
@@ -434,7 +474,7 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Регистрация ───────────────────────────────────────────────────────────
+  // ── Экран: Регистрация ────────────────────────────────────────────────────
   return (
     <div className="mobile-view animate-slide-up">
       <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
@@ -449,7 +489,6 @@ export default function ClientPanel({ businessId }) {
         )}
       </div>
 
-      {/* Статистика */}
       <div className="glass-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem', textAlign: 'center' }}>
         <div>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--accent-color)', marginBottom: '0.25rem' }}>
@@ -469,7 +508,6 @@ export default function ClientPanel({ businessId }) {
         </div>
       </div>
 
-      {/* Форма */}
       <div className="glass-panel">
         <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem' }}>Введите номер автомобиля</h3>
         <form onSubmit={handleJoinQueue} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
