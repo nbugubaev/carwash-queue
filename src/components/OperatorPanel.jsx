@@ -418,7 +418,7 @@ export default function OperatorPanel({ businessId }) {
 
       {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ ────────────────────────────────────────── */}
       {confirmComplete && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
           <div className="modal-content" style={{ textAlign: 'center' }}>
             <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
               <CheckSquare size={48} style={{ margin: '0 auto' }} />
@@ -440,7 +440,7 @@ export default function OperatorPanel({ businessId }) {
 
       {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ ───────────────────────────────────────── */}
       {showAddModal && (
-        <div className="modal-overlay">
+        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
           <div className="modal-content">
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
               <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
