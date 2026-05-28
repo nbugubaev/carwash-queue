@@ -1,29 +1,87 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import { getSupabase } from '../supabase';
-import { Car, Clock, CheckCircle, XCircle, RefreshCw, LogOut, ArrowRight, MapPin } from 'lucide-react';
+import { RefreshCw, Plus, X, CheckSquare, AlertTriangle } from 'lucide-react';
 
-export default function ClientPanel({ businessId }) {
+export default function OperatorPanel({ businessId }) {
   const supabase = getSupabase();
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Тикет — восстанавливаем из localStorage при загрузке
-  const [myTicket, setMyTicket] = useState(null);
-  const [myQueueId, setMyQueueId] = useState(() => localStorage.getItem(`client_queue_id_${businessId}`));
-  const [queueAheadCount, setQueueAheadCount] = useState(0);
+  const [washing, setWashing] = useState([]);
+  const [confirming, setConfirming] = useState([]);
+  const [waiting, setWaiting] = useState([]);
+  const [missed, setMissed] = useState([]);
 
-  // Регистрация
+  const [nowTime, setNowTime] = useState(new Date());
+  const [confirmComplete, setConfirmComplete] = useState(null);
+  const [showAddModal, setShowAddModal] = useState(false);
   const [plateNumber, setPlateNumber] = useState('');
-  const [submitting, setSubmitting] = useState(false);
 
-  // Алерт вызова
-  const [showCallAlert, setShowCallAlert] = useState(false);
-  const [callCountdown, setCallCountdown] = useState(0);
+  // ── Вызов следующих клиентов ─────────────────────────────────────────────
+  // Принимает актуальные данные напрямую (не из state)
 
-  // Модалка подтверждения отмены
-  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const inviteNext = useCallback(async (currentWashing, currentConfirming, currentWaiting, currentBusiness) => {
+    if (!supabase || !currentBusiness) return;
+    try {
+      const activeCount = currentWashing.length + currentConfirming.length;
+      const freeSlots = Math.max(0, currentBusiness.boxes_count - activeCount);
+      if (freeSlots <= 0 || currentWaiting.length === 0) return;
 
-  // ── Загрузка бизнеса ─────────────────────────────────────────────────────
+      const toInvite = currentWaiting.slice(0, freeSlots);
+      const now = new Date().toISOString();
+
+      for (const item of toInvite) {
+        await supabase
+          .from('queue')
+          .update({ status: 'confirmed', invited_at: now })
+          .eq('id', item.id);
+      }
+    } catch (err) {
+      console.error('Error inviting next:', err);
+    }
+  }, [supabase]);
+
+  // ── Загрузка данных ───────────────────────────────────────────────────────
+
+  const fetchAll = useCallback(async (currentBusiness) => {
+    if (!supabase || !businessId) return;
+    try {
+      const { data: active } = await supabase
+        .from('queue')
+        .select('*')
+        .eq('business_id', businessId)
+        .in('status', ['waiting', 'confirmed', 'in_box'])
+        .order('joined_at', { ascending: true });
+
+      const { data: cancelled } = await supabase
+        .from('queue')
+        .select('*')
+        .eq('business_id', businessId)
+        .eq('status', 'cancelled')
+        .not('invited_at', 'is', null)
+        .order('cancelled_at', { ascending: false })
+        .limit(20);
+
+      const all = active || [];
+      const newWashing   = all.filter(i => i.status === 'in_box');
+      const newConfirming = all.filter(i => i.status === 'confirmed');
+      const newWaiting   = all.filter(i => i.status === 'waiting');
+      const newMissed    = cancelled || [];
+
+      setWashing(newWashing);
+      setConfirming(newConfirming);
+      setWaiting(newWaiting);
+      setMissed(newMissed);
+
+      // Автовызов: если есть свободные боксы и есть waiting — вызываем
+      if (currentBusiness) {
+        await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness);
+      }
+    } catch (err) {
+      console.error('fetchAll error:', err);
+    }
+  }, [businessId, supabase, inviteNext]);
 
   useEffect(() => {
     if (!supabase || !businessId) return;
@@ -38,6 +96,9 @@ export default function ClientPanel({ businessId }) {
           .single();
         if (error) throw error;
         setBusiness(data);
+
+        // Загружаем очередь и сразу вызываем следующих если боксы свободны
+        await fetchAll(data);
       } catch (err) {
         console.error('Error loading business:', err);
       } finally {
@@ -47,221 +108,117 @@ export default function ClientPanel({ businessId }) {
 
     init();
 
+    const qChannel = supabase
+      .channel('operator-queue')
+      .on('postgres_changes', {
+        event: '*', schema: 'public', table: 'queue',
+        filter: `business_id=eq.${businessId}`
+      }, () => fetchAll(null)) // realtime — без автовызова чтобы не зациклиться
+      .subscribe();
+
     const busChannel = supabase
-      .channel('client-business')
+      .channel('operator-business')
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public', table: 'businesses',
         filter: `id=eq.${businessId}`
       }, (payload) => setBusiness(payload.new))
       .subscribe();
 
-    return () => supabase.removeChannel(busChannel);
-  }, [businessId, supabase]);
-
-  // ── Восстановление тикета из localStorage ────────────────────────────────
-
-  useEffect(() => {
-    if (!supabase || !myQueueId) return;
-
-    const restore = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('queue')
-          .select('*')
-          .eq('id', myQueueId)
-          .single();
-
-        if (error || !data) {
-          // Тикет не найден — чистим localStorage
-          localStorage.removeItem(`client_queue_id_${businessId}`);
-          setMyQueueId(null);
-          return;
-        }
-
-        setMyTicket(data);
-      } catch (err) {
-        console.error('Error restoring ticket:', err);
-      }
+    return () => {
+      supabase.removeChannel(qChannel);
+      supabase.removeChannel(busChannel);
     };
+  }, [businessId, supabase, fetchAll]);
 
-    restore();
-  }, [myQueueId, businessId, supabase]);
-
-  // ── Подписка на изменения тикета (realtime) ───────────────────────────────
-
+  // Живые таймеры
   useEffect(() => {
-    if (!supabase || !myTicket?.id) return;
-
-    const channel = supabase
-      .channel(`client-ticket-${myTicket.id}`)
-      .on('postgres_changes', {
-        event: 'UPDATE', schema: 'public', table: 'queue',
-        filter: `id=eq.${myTicket.id}`
-      }, (payload) => {
-        setMyTicket(payload.new);
-      })
-      .subscribe();
-
-    return () => supabase.removeChannel(channel);
-  }, [myTicket?.id, supabase]);
-
-  // ── Подсчёт машин впереди ────────────────────────────────────────────────
-
-  const refreshAheadCount = useCallback(async () => {
-    if (!myTicket || myTicket.status !== 'waiting') return;
-    try {
-      const { count } = await supabase
-        .from('queue')
-        .select('*', { count: 'exact', head: true })
-        .eq('business_id', businessId)
-        .eq('status', 'waiting')
-        .lt('joined_at', myTicket.joined_at);
-      setQueueAheadCount(count || 0);
-    } catch (err) {
-      console.error('Error counting ahead:', err);
-    }
-  }, [myTicket, businessId, supabase]);
-
-  useEffect(() => {
-    refreshAheadCount();
-  }, [refreshAheadCount]);
-
-  useEffect(() => {
-    if (!myTicket || myTicket.status !== 'waiting') return;
-    const interval = setInterval(refreshAheadCount, 10000);
-    return () => clearInterval(interval);
-  }, [myTicket, refreshAheadCount]);
-
-  // ── Алерт вызова ─────────────────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!myTicket || !business) return;
-
-    if (myTicket.status === 'confirmed') {
-      setShowCallAlert(true);
-      const timeout = business.confirmation_timeout || 180;
-      const invitedAt = myTicket.invited_at ? new Date(myTicket.invited_at) : new Date();
-      const elapsed = Math.floor((Date.now() - invitedAt.getTime()) / 1000);
-      setCallCountdown(Math.max(0, timeout - elapsed));
-    } else {
-      setShowCallAlert(false);
-    }
-  }, [myTicket?.status, business]);
-
-  useEffect(() => {
-    if (!showCallAlert || callCountdown <= 0) return;
-    const timer = setInterval(() => setCallCountdown(prev => prev - 1), 1000);
+    const timer = setInterval(() => setNowTime(new Date()), 1000);
     return () => clearInterval(timer);
-  }, [showCallAlert, callCountdown]);
+  }, []);
 
   // ── Действия ─────────────────────────────────────────────────────────────
 
-  const handleJoinQueue = async (e) => {
-    e.preventDefault();
-    if (!plateNumber.trim() || submitting) return;
-    setSubmitting(true);
-
+  const handleStartWash = async (item) => {
     try {
-      const plate = plateNumber.trim().toUpperCase();
-
-      // Проверяем нет ли уже активной записи с таким номером
-      const { data: existing } = await supabase
+      await supabase
         .from('queue')
-        .select('*')
-        .eq('business_id', businessId)
-        .eq('plate_number', plate)
-        .in('status', ['waiting', 'confirmed', 'in_box'])
-        .limit(1);
-
-      if (existing && existing.length > 0) {
-        // Машина уже в очереди — восстанавливаем тикет
-        localStorage.setItem(`client_queue_id_${businessId}`, existing[0].id);
-        setMyQueueId(existing[0].id);
-        setMyTicket(existing[0]);
-        setSubmitting(false);
-        return;
-      }
-
-      // Создаём новую запись
-      const { data, error } = await supabase
-        .from('queue')
-        .insert([{
-          business_id: businessId,
-          plate_number: plate,
-          status: 'waiting',
-          presence_confirmed: false,
-          created_by: 'client'
-        }])
-        .select();
-
-      if (error) throw error;
-
-      const ticketId = data[0].id;
-      localStorage.setItem(`client_queue_id_${businessId}`, ticketId);
-      setMyQueueId(ticketId);
-      setMyTicket(data[0]);
+        .update({ status: 'in_box', started_at: new Date().toISOString() })
+        .eq('id', item.id);
     } catch (err) {
-      alert('Ошибка при записи: ' + err.message);
-    } finally {
-      setSubmitting(false);
+      console.error('Error starting wash:', err);
     }
   };
 
-  const handleConfirmArrival = async () => {
-    if (!myTicket) return;
+  const handleCompleteWash = async () => {
+    if (!confirmComplete) return;
     try {
-      const { data, error } = await supabase
+      await supabase
         .from('queue')
-        .update({ presence_confirmed: true })
-        .eq('id', myTicket.id)
-        .select();
-      if (error) throw error;
-      setMyTicket(data[0]);
-      setShowCallAlert(false);
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
+        .eq('id', confirmComplete.id);
+
+      setConfirmComplete(null);
+
+      // После завершения пересчитываем и вызываем следующего
+      // Временно убираем завершённую машину из washing для правильного подсчёта
+      const updatedWashing = washing.filter(i => i.id !== confirmComplete.id);
+      await inviteNext(updatedWashing, confirming, waiting, business);
     } catch (err) {
-      console.error('Error confirming arrival:', err);
+      console.error('Error completing wash:', err);
     }
   };
 
-  const handleCancelQueue = async () => {
-    if (!myTicket) return;
+  const handleKick = async (item) => {
+    if (!confirm(`Исключить машину ${item.plate_number} из очереди?`)) return;
     try {
       await supabase
         .from('queue')
         .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-        .eq('id', myTicket.id);
-
-      localStorage.removeItem(`client_queue_id_${businessId}`);
-      setMyQueueId(null);
-      setMyTicket(prev => ({ ...prev, status: 'cancelled' }));
-      setShowCancelConfirm(false);
-      setShowCallAlert(false);
+        .eq('id', item.id);
     } catch (err) {
-      console.error('Error cancelling:', err);
+      console.error('Error kicking:', err);
     }
   };
 
-  const handleRegisterNew = () => {
-    localStorage.removeItem(`client_queue_id_${businessId}`);
-    setMyQueueId(null);
-    setMyTicket(null);
-    setPlateNumber('');
-    setShowCallAlert(false);
-    setQueueAheadCount(0);
+  const handleAddManual = async (e) => {
+    e.preventDefault();
+    if (!plateNumber.trim()) return;
+    try {
+      await supabase
+        .from('queue')
+        .insert([{
+          business_id: businessId,
+          plate_number: plateNumber.trim().toUpperCase(),
+          status: 'waiting',
+          presence_confirmed: false,
+          created_by: 'operator',
+        }]);
+      setPlateNumber('');
+      setShowAddModal(false);
+    } catch (err) {
+      alert('Ошибка: ' + err.message);
+    }
   };
 
   // ── Вспомогательные ──────────────────────────────────────────────────────
 
-  const formatCountdown = (secs) => {
-    const m = Math.floor(secs / 60);
-    const s = secs % 60;
-    return `${m}:${s.toString().padStart(2, '0')}`;
+  const formatElapsed = (startedAt) => {
+    if (!startedAt) return '00:00';
+    const diff = Math.max(0, nowTime - new Date(startedAt));
+    const total = Math.floor(diff / 1000);
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const estimatedWait = () => {
-    if (!business) return 0;
-    const activeBoxes = Math.max(1, business.boxes_count - (business.offline_boxes?.length || 0));
-    return Math.max(1, Math.round((queueAheadCount + 1) / activeBoxes) * (business.base_wash_time || 30));
+  const formatCountdown = (invitedAt) => {
+    if (!invitedAt || !business) return null;
+    const timeout = business.confirmation_timeout || 180;
+    const elapsed = Math.floor((nowTime - new Date(invitedAt)) / 1000);
+    const remaining = Math.max(0, timeout - elapsed);
+    const m = Math.floor(remaining / 60);
+    const s = remaining % 60;
+    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   // ── Рендер ───────────────────────────────────────────────────────────────
@@ -278,226 +235,246 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Мойка завершена ───────────────────────────────────────────────────────
-  if (myTicket?.status === 'completed') {
-    return (
-      <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
-        <div className="glass-panel" style={{ padding: '3rem 2rem' }}>
-          <div style={{ color: 'var(--color-success)', marginBottom: '1.5rem' }}>
-            <CheckCircle size={64} style={{ margin: '0 auto' }} />
-          </div>
-          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>Мойка завершена!</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', lineHeight: 1.5 }}>
-            Спасибо, что воспользовались нашими услугами. Ваш автомобиль готов.
-          </p>
-          <button className="btn btn-primary btn-block" onClick={handleRegisterNew}>
-            Записаться снова
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Отменено ──────────────────────────────────────────────────────────────
-  if (myTicket?.status === 'cancelled') {
-    return (
-      <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
-        <div className="glass-panel" style={{ padding: '3rem 2rem' }}>
-          <div style={{ color: 'var(--color-danger)', marginBottom: '1.5rem' }}>
-            <XCircle size={64} style={{ margin: '0 auto' }} />
-          </div>
-          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>Запись отменена</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '2rem', lineHeight: 1.5 }}>
-            Вы покинули очередь. Вставайте заново если хотите помыть машину.
-          </p>
-          <button className="btn btn-primary btn-block" onClick={handleRegisterNew}>
-            Встать в очередь заново
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Машина моется ─────────────────────────────────────────────────────────
-  if (myTicket?.status === 'in_box') {
-    return (
-      <div className="mobile-view animate-slide-up">
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '1.75rem', fontFamily: 'var(--font-heading)' }}>{business.name}</h1>
-          {business.address && (
-            <p style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', fontSize: '0.875rem' }}>
-              <MapPin size={14} /> {business.address}
-            </p>
-          )}
-        </div>
-        <div className="glass-panel" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
-          <div style={{ color: 'var(--color-success)', marginBottom: '1.5rem' }}>
-            <Car size={64} style={{ margin: '0 auto' }} />
-          </div>
-          <h2 style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>Ваша машина моется</h2>
-          <p style={{ fontSize: '1.1rem', fontFamily: 'monospace', fontWeight: 'bold', marginBottom: '0.5rem' }}>
-            {myTicket.plate_number}
-          </p>
-          <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>
-            Пожалуйста, ожидайте. Оператор сообщит когда машина будет готова.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Ожидание / Вызов ──────────────────────────────────────────────────────
-  if (myTicket?.status === 'waiting' || myTicket?.status === 'confirmed') {
-    return (
-      <div className="mobile-view animate-slide-up">
-
-        {/* Полноэкранный алерт вызова */}
-        {showCallAlert && (
-          <div className="alert-popup">
-            <div className="alert-card" style={{ textAlign: 'center' }}>
-              <div style={{ color: 'var(--color-success)', marginBottom: '1.25rem' }}>
-                <CheckCircle size={64} style={{ margin: '0 auto' }} />
-              </div>
-              <h2 style={{ fontSize: '2rem', marginBottom: '0.75rem', color: 'white' }}>Ваша очередь!</h2>
-              <p style={{ fontSize: '1.25rem', color: 'var(--color-success)', fontWeight: 700, marginBottom: '1.5rem' }}>
-                Заезжайте
-              </p>
-              <div style={{ fontSize: '2.5rem', fontWeight: 900, fontFamily: 'monospace', color: 'white', marginBottom: '1.5rem' }}>
-                {formatCountdown(callCountdown)}
-              </div>
-              <button className="btn btn-success btn-block" style={{ fontSize: '1.1rem', padding: '1rem' }} onClick={handleConfirmArrival}>
-                Еду!
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Модалка подтверждения отмены */}
-        {showCancelConfirm && (
-          <div className="modal-overlay">
-            <div className="modal-content" style={{ textAlign: 'center' }}>
-              <h3 style={{ fontSize: '1.25rem', marginBottom: '0.75rem' }}>Вы уверены?</h3>
-              <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
-                Вы покинете очередь и потеряете своё место.
-              </p>
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <button className="btn btn-danger" style={{ flex: 1 }} onClick={handleCancelQueue}>Да, отменить</button>
-                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowCancelConfirm(false)}>Нет</button>
-              </div>
-            </div>
-          </div>
-        )}
+  return (
+    <>
+      <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
 
         {/* Шапка */}
-        <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-          <h1 style={{ fontSize: '1.75rem', fontFamily: 'var(--font-heading)' }}>{business.name}</h1>
-          {business.address && (
-            <p style={{ color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', fontSize: '0.875rem' }}>
-              <MapPin size={14} /> {business.address}
-            </p>
-          )}
-        </div>
-
-        {/* Карточка */}
-        <div className="glass-panel" style={{ textAlign: 'center', marginBottom: '1.5rem', border: '1px solid var(--accent-color)', padding: '2rem' }}>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Ваш автомобиль</p>
-          <div style={{ fontSize: '2rem', fontFamily: 'monospace', fontWeight: 'bold', marginBottom: '1.5rem' }}>
-            {myTicket.plate_number}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
-            <div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Перед вами</p>
-              <p style={{ fontSize: '2rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>
-                {queueAheadCount}
-                <span style={{ fontSize: '1rem', fontWeight: 500, color: 'var(--text-secondary)', marginLeft: '0.25rem' }}>машин</span>
-              </p>
-            </div>
-            <div>
-              <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Ожидание</p>
-              <p style={{ fontSize: '2rem', fontWeight: 800, color: 'var(--color-warning)', fontFamily: 'var(--font-heading)' }}>
-                ~{estimatedWait()}
-                <span style={{ fontSize: '1rem', fontWeight: 500, marginLeft: '0.25rem' }}>мин</span>
-              </p>
-            </div>
-          </div>
-        </div>
-
-        {/* Подсказка */}
-        <div className="glass-panel" style={{ padding: '1rem 1.25rem', marginBottom: '1.5rem', fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5, textAlign: 'center' }}>
-          🔔 Не закрывайте страницу — когда подойдёт ваша очередь, здесь появится уведомление
-        </div>
-
-        <button className="btn btn-danger btn-block" onClick={() => setShowCancelConfirm(true)}>
-          <LogOut size={16} /> Отменить запись
-        </button>
-      </div>
-    );
-  }
-
-  // ── Регистрация ───────────────────────────────────────────────────────────
-  return (
-    <div className="mobile-view animate-slide-up">
-      <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
-        <h1 style={{ fontSize: '2rem', fontFamily: 'var(--font-heading)', marginBottom: '0.5rem' }}>
-          Запись в очередь
-        </h1>
-        <p style={{ color: 'var(--text-secondary)' }}>{business.name}</p>
-        {business.address && (
-          <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
-            <MapPin size={12} /> {business.address}
-          </p>
-        )}
-      </div>
-
-      {/* Статистика */}
-      <div className="glass-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem', textAlign: 'center' }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--accent-color)', marginBottom: '0.25rem' }}>
-            <Car size={22} />
-          </div>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>Машин в очереди</p>
-          <p style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>{queueAheadCount}</p>
-        </div>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--color-warning)', marginBottom: '0.25rem' }}>
-            <Clock size={22} />
-          </div>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>Ожидание</p>
-          <p style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--color-warning)', fontFamily: 'var(--font-heading)' }}>
-            ~{estimatedWait()} <span style={{ fontSize: '1rem', fontWeight: 600 }}>мин</span>
-          </p>
-        </div>
-      </div>
-
-      {/* Форма */}
-      <div className="glass-panel">
-        <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem' }}>Введите номер автомобиля</h3>
-        <form onSubmit={handleJoinQueue} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-              Гос. номер *
-            </label>
-            <div style={{ position: 'relative' }}>
-              <Car size={18} style={{ position: 'absolute', left: '12px', top: '16px', color: 'var(--text-muted)' }} />
-              <input
-                type="text"
-                required
-                placeholder="А777АА177"
-                value={plateNumber}
-                onChange={(e) => setPlateNumber(e.target.value)}
-                style={{ paddingLeft: '2.5rem', textTransform: 'uppercase' }}
-              />
-            </div>
+            <h1 style={{ fontSize: '2rem' }}>Панель оператора</h1>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              {business.name} · Боксов: {business.boxes_count}
+            </p>
           </div>
-          <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
-            {submitting ? 'Проверяем...' : 'Встать в очередь'} <ArrowRight size={18} />
+          <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+            <Plus size={18} /> Добавить вручную
           </button>
-        </form>
+        </div>
+
+        {/* ── ЗОНА 1: МОЮТСЯ ───────────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
+            Моются ({washing.length})
+          </h2>
+
+          {washing.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Боксы свободны
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {washing.map(item => (
+                <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(34,197,94,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
+                      {item.plate_number}
+                    </span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: 'var(--color-success)', fontWeight: 700 }}>
+                      {formatElapsed(item.started_at)}
+                    </span>
+                  </div>
+                  <button
+                    className="btn btn-success"
+                    style={{ padding: '0.5rem 1.25rem' }}
+                    onClick={() => setConfirmComplete(item)}
+                  >
+                    Мойка завершена
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── ЗОНА 2: ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ ───────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-warning)', display: 'inline-block' }} />
+            Ожидают подтверждения ({confirming.length})
+          </h2>
+
+          {confirming.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Нет вызванных клиентов
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {confirming.map(item => {
+                const countdown = formatCountdown(item.invited_at);
+                return (
+                  <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(245,158,11,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
+                        {item.plate_number}
+                      </span>
+                      {item.presence_confirmed ? (
+                        <span style={{ fontSize: '0.9rem', color: 'var(--color-success)', fontWeight: 600 }}>
+                          ✓ Едет
+                        </span>
+                      ) : countdown ? (
+                        <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>
+                          осталось {countdown}
+                        </span>
+                      ) : null}
+                    </div>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '0.5rem 1.25rem' }}
+                      onClick={() => handleStartWash(item)}
+                    >
+                      Начать мойку
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* ── ЗОНА 3: ОЧЕРЕДЬ ──────────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent-color)', display: 'inline-block' }} />
+            Очередь ({waiting.length})
+          </h2>
+
+          {waiting.length === 0 && missed.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Очередь пуста
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Гос. номер</th>
+                    <th>Ждёт с</th>
+                    <th>Добавил</th>
+                    <th>Действие</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {waiting.map((item, idx) => (
+                    <tr key={item.id}>
+                      <td style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{idx + 1}</td>
+                      <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                      <td>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                          {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem', color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.2)' }}
+                          onClick={() => handleKick(item)}
+                        >
+                          Исключить
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+
+                  {missed.length > 0 && (
+                    <>
+                      <tr>
+                        <td colSpan={5} style={{ padding: '0.5rem 1rem', background: 'rgba(239,68,68,0.05)', borderTop: '1px solid rgba(239,68,68,0.2)' }}>
+                          <span style={{ fontSize: '0.8125rem', color: 'var(--color-danger)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <AlertTriangle size={14} /> Не ответили на вызов
+                          </span>
+                        </td>
+                      </tr>
+                      {missed.map(item => (
+                        <tr key={item.id} style={{ opacity: 0.85 }}>
+                          <td style={{ color: 'var(--color-danger)' }}>⚠️</td>
+                          <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
+                          <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                          <td>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }}
+                              onClick={() => handleStartWash(item)}
+                            >
+                              Начать мойку
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+
       </div>
 
-      <p style={{ marginTop: '1.5rem', textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)', lineHeight: 1.4 }}>
-        Не закрывайте страницу — здесь вы узнаете когда заезжать
-      </p>
-    </div>
+      {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ ── Portal ── */}
+      {confirmComplete && ReactDOM.createPortal(
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ textAlign: 'center' }}>
+            <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
+              <CheckSquare size={48} style={{ margin: '0 auto' }} />
+            </div>
+            <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Завершить мойку?</h3>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
+              Автомобиль с гос. номером:<br />
+              <strong style={{ fontSize: '1.35rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+                {confirmComplete.plate_number}
+              </strong>
+            </p>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button className="btn btn-success" style={{ flex: 1 }} onClick={handleCompleteWash}>ДА</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setConfirmComplete(null)}>ОТМЕНА</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ ── Portal ── */}
+      {showAddModal && ReactDOM.createPortal(
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
+              <button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                  Гос. номер *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="А777АА177"
+                  value={plateNumber}
+                  onChange={(e) => setPlateNumber(e.target.value)}
+                  style={{ textTransform: 'uppercase' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
+                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>Отмена</button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
