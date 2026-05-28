@@ -7,25 +7,23 @@ export default function ClientPanel({ businessId }) {
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Ticket
-  const [myQueueId, setMyQueueId] = useState(() => localStorage.getItem(`client_queue_id_${businessId}`));
+  // Тикет — восстанавливаем из localStorage при загрузке
   const [myTicket, setMyTicket] = useState(null);
-
-  // Queue stats (только для экрана ожидания)
+  const [myQueueId, setMyQueueId] = useState(() => localStorage.getItem(`client_queue_id_${businessId}`));
   const [queueAheadCount, setQueueAheadCount] = useState(0);
 
-  // Registration
+  // Регистрация
   const [plateNumber, setPlateNumber] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  // Вызов — полноэкранный алерт
+  // Алерт вызова
   const [showCallAlert, setShowCallAlert] = useState(false);
   const [callCountdown, setCallCountdown] = useState(0);
 
   // Модалка подтверждения отмены
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
 
-  // ── Загрузка бизнеса и подписки ──────────────────────────────────────────
+  // ── Загрузка бизнеса ─────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!supabase || !businessId) return;
@@ -49,113 +47,110 @@ export default function ClientPanel({ businessId }) {
 
     init();
 
-    // Подписка на изменения очереди
-    const channel = supabase
-      .channel('client-queue')
-      .on('postgres_changes', {
-        event: '*', schema: 'public', table: 'queue',
-        filter: `business_id=eq.${businessId}`
-      }, () => {
-        refreshTicketAndQueue();
-      })
-      .subscribe();
-
-    // Подписка на изменения настроек бизнеса
     const busChannel = supabase
       .channel('client-business')
       .on('postgres_changes', {
         event: 'UPDATE', schema: 'public', table: 'businesses',
         filter: `id=eq.${businessId}`
+      }, (payload) => setBusiness(payload.new))
+      .subscribe();
+
+    return () => supabase.removeChannel(busChannel);
+  }, [businessId, supabase]);
+
+  // ── Восстановление тикета из localStorage ────────────────────────────────
+
+  useEffect(() => {
+    if (!supabase || !myQueueId) return;
+
+    const restore = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('queue')
+          .select('*')
+          .eq('id', myQueueId)
+          .single();
+
+        if (error || !data) {
+          // Тикет не найден — чистим localStorage
+          localStorage.removeItem(`client_queue_id_${businessId}`);
+          setMyQueueId(null);
+          return;
+        }
+
+        setMyTicket(data);
+      } catch (err) {
+        console.error('Error restoring ticket:', err);
+      }
+    };
+
+    restore();
+  }, [myQueueId, businessId, supabase]);
+
+  // ── Подписка на изменения тикета (realtime) ───────────────────────────────
+
+  useEffect(() => {
+    if (!supabase || !myTicket?.id) return;
+
+    const channel = supabase
+      .channel(`client-ticket-${myTicket.id}`)
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public', table: 'queue',
+        filter: `id=eq.${myTicket.id}`
       }, (payload) => {
-        setBusiness(payload.new);
+        setMyTicket(payload.new);
       })
       .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-      supabase.removeChannel(busChannel);
-    };
-  }, [businessId, supabase]);
+    return () => supabase.removeChannel(channel);
+  }, [myTicket?.id, supabase]);
 
-  // ── Обновление тикета и позиции в очереди ────────────────────────────────
+  // ── Подсчёт машин впереди ────────────────────────────────────────────────
 
-  const refreshTicketAndQueue = useCallback(async () => {
-    if (!myQueueId) return;
-
+  const refreshAheadCount = useCallback(async () => {
+    if (!myTicket || myTicket.status !== 'waiting') return;
     try {
-      // Получаем свой тикет
-      const { data: ticket, error } = await supabase
+      const { count } = await supabase
         .from('queue')
-        .select('*')
-        .eq('id', myQueueId)
-        .single();
-
-      if (error || !ticket) {
-        setMyTicket(null);
-        return;
-      }
-
-      setMyTicket(ticket);
-
-      // Считаем сколько машин впереди (только waiting, присоединились раньше)
-      if (ticket.status === 'waiting') {
-        const { count } = await supabase
-          .from('queue')
-          .select('*', { count: 'exact', head: true })
-          .eq('business_id', businessId)
-          .eq('status', 'waiting')
-          .lt('joined_at', ticket.joined_at);
-
-        setQueueAheadCount(count || 0);
-      }
+        .select('*', { count: 'exact', head: true })
+        .eq('business_id', businessId)
+        .eq('status', 'waiting')
+        .lt('joined_at', myTicket.joined_at);
+      setQueueAheadCount(count || 0);
     } catch (err) {
-      console.error('Error refreshing ticket:', err);
+      console.error('Error counting ahead:', err);
     }
-  }, [myQueueId, businessId, supabase]);
+  }, [myTicket, businessId, supabase]);
 
-  // Запускаем обновление при монтировании и при смене myQueueId
   useEffect(() => {
-    if (myQueueId) {
-      refreshTicketAndQueue();
-    }
-  }, [myQueueId, refreshTicketAndQueue]);
+    refreshAheadCount();
+  }, [refreshAheadCount]);
 
-  // ── Алерт вызова (confirmed) ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!myTicket || myTicket.status !== 'waiting') return;
+    const interval = setInterval(refreshAheadCount, 10000);
+    return () => clearInterval(interval);
+  }, [myTicket, refreshAheadCount]);
+
+  // ── Алерт вызова ─────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!myTicket || !business) return;
 
     if (myTicket.status === 'confirmed') {
-      // Показываем полноэкранный алерт с таймером
       setShowCallAlert(true);
-
-      // Считаем сколько секунд осталось (invited_at + timeout - now)
       const timeout = business.confirmation_timeout || 180;
       const invitedAt = myTicket.invited_at ? new Date(myTicket.invited_at) : new Date();
       const elapsed = Math.floor((Date.now() - invitedAt.getTime()) / 1000);
-      const remaining = Math.max(0, timeout - elapsed);
-      setCallCountdown(remaining);
+      setCallCountdown(Math.max(0, timeout - elapsed));
     } else {
       setShowCallAlert(false);
     }
   }, [myTicket?.status, business]);
 
-  // Таймер обратного отсчёта на экране вызова
   useEffect(() => {
-    if (!showCallAlert) return;
-
-    if (callCountdown <= 0) {
-      // Таймер истёк — сервер сам отменит (через Edge Function или оператор)
-      // Просто убираем алерт и обновляем тикет
-      setShowCallAlert(false);
-      refreshTicketAndQueue();
-      return;
-    }
-
-    const timer = setInterval(() => {
-      setCallCountdown(prev => prev - 1);
-    }, 1000);
-
+    if (!showCallAlert || callCountdown <= 0) return;
+    const timer = setInterval(() => setCallCountdown(prev => prev - 1), 1000);
     return () => clearInterval(timer);
   }, [showCallAlert, callCountdown]);
 
@@ -167,11 +162,32 @@ export default function ClientPanel({ businessId }) {
     setSubmitting(true);
 
     try {
+      const plate = plateNumber.trim().toUpperCase();
+
+      // Проверяем нет ли уже активной записи с таким номером
+      const { data: existing } = await supabase
+        .from('queue')
+        .select('*')
+        .eq('business_id', businessId)
+        .eq('plate_number', plate)
+        .in('status', ['waiting', 'confirmed', 'in_box'])
+        .limit(1);
+
+      if (existing && existing.length > 0) {
+        // Машина уже в очереди — восстанавливаем тикет
+        localStorage.setItem(`client_queue_id_${businessId}`, existing[0].id);
+        setMyQueueId(existing[0].id);
+        setMyTicket(existing[0]);
+        setSubmitting(false);
+        return;
+      }
+
+      // Создаём новую запись
       const { data, error } = await supabase
         .from('queue')
         .insert([{
           business_id: businessId,
-          plate_number: plateNumber.trim().toUpperCase(),
+          plate_number: plate,
           status: 'waiting',
           presence_confirmed: false,
           created_by: 'client'
@@ -194,31 +210,30 @@ export default function ClientPanel({ businessId }) {
   const handleConfirmArrival = async () => {
     if (!myTicket) return;
     try {
-      await supabase
+      const { data, error } = await supabase
         .from('queue')
         .update({ presence_confirmed: true })
-        .eq('id', myTicket.id);
-
+        .eq('id', myTicket.id)
+        .select();
+      if (error) throw error;
+      setMyTicket(data[0]);
       setShowCallAlert(false);
-      refreshTicketAndQueue();
     } catch (err) {
       console.error('Error confirming arrival:', err);
     }
   };
 
   const handleCancelQueue = async () => {
-    const ticketId = myTicket?.id || myQueueId;
-    if (!ticketId) return;
-
+    if (!myTicket) return;
     try {
       await supabase
         .from('queue')
         .update({ status: 'cancelled', cancelled_at: new Date().toISOString() })
-        .eq('id', ticketId);
+        .eq('id', myTicket.id);
 
       localStorage.removeItem(`client_queue_id_${businessId}`);
       setMyQueueId(null);
-      setMyTicket(null);
+      setMyTicket(prev => ({ ...prev, status: 'cancelled' }));
       setShowCancelConfirm(false);
       setShowCallAlert(false);
     } catch (err) {
@@ -232,6 +247,7 @@ export default function ClientPanel({ businessId }) {
     setMyTicket(null);
     setPlateNumber('');
     setShowCallAlert(false);
+    setQueueAheadCount(0);
   };
 
   // ── Вспомогательные ──────────────────────────────────────────────────────
@@ -262,10 +278,10 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Экран: Мойка завершена ────────────────────────────────────────────────
+  // ── Мойка завершена ───────────────────────────────────────────────────────
   if (myTicket?.status === 'completed') {
     return (
-      <div className="mobile-view text-center animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
+      <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
         <div className="glass-panel" style={{ padding: '3rem 2rem' }}>
           <div style={{ color: 'var(--color-success)', marginBottom: '1.5rem' }}>
             <CheckCircle size={64} style={{ margin: '0 auto' }} />
@@ -282,10 +298,10 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Экран: Отменено ───────────────────────────────────────────────────────
+  // ── Отменено ──────────────────────────────────────────────────────────────
   if (myTicket?.status === 'cancelled') {
     return (
-      <div className="mobile-view text-center animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
+      <div className="mobile-view animate-slide-up" style={{ textAlign: 'center', marginTop: '4rem' }}>
         <div className="glass-panel" style={{ padding: '3rem 2rem' }}>
           <div style={{ color: 'var(--color-danger)', marginBottom: '1.5rem' }}>
             <XCircle size={64} style={{ margin: '0 auto' }} />
@@ -302,7 +318,7 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Экран: Машина моется ──────────────────────────────────────────────────
+  // ── Машина моется ─────────────────────────────────────────────────────────
   if (myTicket?.status === 'in_box') {
     return (
       <div className="mobile-view animate-slide-up">
@@ -319,7 +335,7 @@ export default function ClientPanel({ businessId }) {
             <Car size={64} style={{ margin: '0 auto' }} />
           </div>
           <h2 style={{ fontSize: '1.75rem', marginBottom: '0.75rem' }}>Ваша машина моется</h2>
-          <p style={{ color: 'var(--text-secondary)', fontSize: '1.1rem', marginBottom: '0.5rem', fontFamily: 'monospace', fontWeight: 'bold' }}>
+          <p style={{ fontSize: '1.1rem', fontFamily: 'monospace', fontWeight: 'bold', marginBottom: '0.5rem' }}>
             {myTicket.plate_number}
           </p>
           <p style={{ color: 'var(--text-secondary)', lineHeight: 1.5 }}>
@@ -330,9 +346,8 @@ export default function ClientPanel({ businessId }) {
     );
   }
 
-  // ── Экран: Активная очередь (waiting / confirmed) ─────────────────────────
+  // ── Ожидание / Вызов ──────────────────────────────────────────────────────
   if (myTicket?.status === 'waiting' || myTicket?.status === 'confirmed') {
-
     return (
       <div className="mobile-view animate-slide-up">
 
@@ -343,9 +358,7 @@ export default function ClientPanel({ businessId }) {
               <div style={{ color: 'var(--color-success)', marginBottom: '1.25rem' }}>
                 <CheckCircle size={64} style={{ margin: '0 auto' }} />
               </div>
-              <h2 style={{ fontSize: '2rem', marginBottom: '0.75rem', color: 'white' }}>
-                Ваша очередь!
-              </h2>
+              <h2 style={{ fontSize: '2rem', marginBottom: '0.75rem', color: 'white' }}>Ваша очередь!</h2>
               <p style={{ fontSize: '1.25rem', color: 'var(--color-success)', fontWeight: 700, marginBottom: '1.5rem' }}>
                 Заезжайте
               </p>
@@ -368,12 +381,8 @@ export default function ClientPanel({ businessId }) {
                 Вы покинете очередь и потеряете своё место.
               </p>
               <div style={{ display: 'flex', gap: '1rem' }}>
-                <button className="btn btn-danger" style={{ flex: 1 }} onClick={handleCancelQueue}>
-                  Да, отменить
-                </button>
-                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowCancelConfirm(false)}>
-                  Нет
-                </button>
+                <button className="btn btn-danger" style={{ flex: 1 }} onClick={handleCancelQueue}>Да, отменить</button>
+                <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowCancelConfirm(false)}>Нет</button>
               </div>
             </div>
           </div>
@@ -389,13 +398,12 @@ export default function ClientPanel({ businessId }) {
           )}
         </div>
 
-        {/* Карточка очереди */}
+        {/* Карточка */}
         <div className="glass-panel" style={{ textAlign: 'center', marginBottom: '1.5rem', border: '1px solid var(--accent-color)', padding: '2rem' }}>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '0.25rem' }}>Ваш автомобиль</p>
           <div style={{ fontSize: '2rem', fontFamily: 'monospace', fontWeight: 'bold', marginBottom: '1.5rem' }}>
             {myTicket.plate_number}
           </div>
-
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '1.25rem' }}>
             <div>
               <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginBottom: '0.25rem' }}>Перед вами</p>
@@ -419,18 +427,14 @@ export default function ClientPanel({ businessId }) {
           🔔 Не закрывайте страницу — когда подойдёт ваша очередь, здесь появится уведомление
         </div>
 
-        {/* Кнопка отмены */}
-        <button
-          className="btn btn-danger btn-block"
-          onClick={() => setShowCancelConfirm(true)}
-        >
+        <button className="btn btn-danger btn-block" onClick={() => setShowCancelConfirm(true)}>
           <LogOut size={16} /> Отменить запись
         </button>
       </div>
     );
   }
 
-  // ── Экран: Регистрация ────────────────────────────────────────────────────
+  // ── Регистрация ───────────────────────────────────────────────────────────
   return (
     <div className="mobile-view animate-slide-up">
       <div style={{ textAlign: 'center', marginBottom: '2.5rem' }}>
@@ -445,16 +449,14 @@ export default function ClientPanel({ businessId }) {
         )}
       </div>
 
-      {/* Статистика очереди */}
+      {/* Статистика */}
       <div className="glass-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '2rem', textAlign: 'center' }}>
         <div>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--accent-color)', marginBottom: '0.25rem' }}>
             <Car size={22} />
           </div>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>Машин в очереди</p>
-          <p style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>
-            {queueAheadCount}
-          </p>
+          <p style={{ fontSize: '1.75rem', fontWeight: 800, fontFamily: 'var(--font-heading)' }}>{queueAheadCount}</p>
         </div>
         <div>
           <div style={{ display: 'flex', justifyContent: 'center', color: 'var(--color-warning)', marginBottom: '0.25rem' }}>
@@ -467,7 +469,7 @@ export default function ClientPanel({ businessId }) {
         </div>
       </div>
 
-      {/* Форма регистрации */}
+      {/* Форма */}
       <div className="glass-panel">
         <h3 style={{ fontSize: '1.1rem', marginBottom: '1.25rem' }}>Введите номер автомобиля</h3>
         <form onSubmit={handleJoinQueue} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
@@ -488,7 +490,7 @@ export default function ClientPanel({ businessId }) {
             </div>
           </div>
           <button type="submit" className="btn btn-primary btn-block" disabled={submitting}>
-            {submitting ? 'Запись...' : 'Встать в очередь'} <ArrowRight size={18} />
+            {submitting ? 'Проверяем...' : 'Встать в очередь'} <ArrowRight size={18} />
           </button>
         </form>
       </div>
