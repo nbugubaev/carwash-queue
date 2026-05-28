@@ -243,6 +243,8 @@ input:focus, select:focus, textarea:focus {
   display: flex;
   align-items: center;
   justify-content: center;
+  background-color: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
   animation: modal-fade-in var(--transition-fast) forwards;
   padding: 1rem;
 }
