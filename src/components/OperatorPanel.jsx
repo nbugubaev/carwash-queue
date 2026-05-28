@@ -8,28 +8,45 @@ export default function OperatorPanel({ businessId }) {
   const [business, setBusiness] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Очередь — все активные записи
-  const [washing, setWashing] = useState([]);       // in_box
-  const [confirming, setConfirming] = useState([]); // confirmed (ожидают подтверждения)
-  const [waiting, setWaiting] = useState([]);        // waiting (в очереди)
-  const [missed, setMissed] = useState([]);          // cancelled по таймеру (есть invited_at)
+  const [washing, setWashing] = useState([]);
+  const [confirming, setConfirming] = useState([]);
+  const [waiting, setWaiting] = useState([]);
+  const [missed, setMissed] = useState([]);
 
-  // Таймеры
   const [nowTime, setNowTime] = useState(new Date());
-
-  // Модалка завершения мойки
   const [confirmComplete, setConfirmComplete] = useState(null);
-
-  // Модалка ручного добавления
   const [showAddModal, setShowAddModal] = useState(false);
   const [plateNumber, setPlateNumber] = useState('');
 
+  // ── Вызов следующих клиентов ─────────────────────────────────────────────
+  // Принимает актуальные данные напрямую (не из state)
+
+  const inviteNext = useCallback(async (currentWashing, currentConfirming, currentWaiting, currentBusiness) => {
+    if (!supabase || !currentBusiness) return;
+    try {
+      const activeCount = currentWashing.length + currentConfirming.length;
+      const freeSlots = Math.max(0, currentBusiness.boxes_count - activeCount);
+      if (freeSlots <= 0 || currentWaiting.length === 0) return;
+
+      const toInvite = currentWaiting.slice(0, freeSlots);
+      const now = new Date().toISOString();
+
+      for (const item of toInvite) {
+        await supabase
+          .from('queue')
+          .update({ status: 'confirmed', invited_at: now })
+          .eq('id', item.id);
+      }
+    } catch (err) {
+      console.error('Error inviting next:', err);
+    }
+  }, [supabase]);
+
   // ── Загрузка данных ───────────────────────────────────────────────────────
 
-  const fetchAll = useCallback(async () => {
+  const fetchAll = useCallback(async (currentBusiness) => {
     if (!supabase || !businessId) return;
     try {
-      // Активные
       const { data: active } = await supabase
         .from('queue')
         .select('*')
@@ -37,7 +54,6 @@ export default function OperatorPanel({ businessId }) {
         .in('status', ['waiting', 'confirmed', 'in_box'])
         .order('joined_at', { ascending: true });
 
-      // Отменённые по таймеру (есть invited_at — значит были вызваны)
       const { data: cancelled } = await supabase
         .from('queue')
         .select('*')
@@ -48,14 +64,24 @@ export default function OperatorPanel({ businessId }) {
         .limit(20);
 
       const all = active || [];
-      setWashing(all.filter(i => i.status === 'in_box'));
-      setConfirming(all.filter(i => i.status === 'confirmed'));
-      setWaiting(all.filter(i => i.status === 'waiting'));
-      setMissed(cancelled || []);
+      const newWashing   = all.filter(i => i.status === 'in_box');
+      const newConfirming = all.filter(i => i.status === 'confirmed');
+      const newWaiting   = all.filter(i => i.status === 'waiting');
+      const newMissed    = cancelled || [];
+
+      setWashing(newWashing);
+      setConfirming(newConfirming);
+      setWaiting(newWaiting);
+      setMissed(newMissed);
+
+      // Автовызов: если есть свободные боксы и есть waiting — вызываем
+      if (currentBusiness) {
+        await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness);
+      }
     } catch (err) {
       console.error('fetchAll error:', err);
     }
-  }, [businessId, supabase]);
+  }, [businessId, supabase, inviteNext]);
 
   useEffect(() => {
     if (!supabase || !businessId) return;
@@ -70,6 +96,9 @@ export default function OperatorPanel({ businessId }) {
           .single();
         if (error) throw error;
         setBusiness(data);
+
+        // Загружаем очередь и сразу вызываем следующих если боксы свободны
+        await fetchAll(data);
       } catch (err) {
         console.error('Error loading business:', err);
       } finally {
@@ -78,14 +107,13 @@ export default function OperatorPanel({ businessId }) {
     };
 
     init();
-    fetchAll();
 
     const qChannel = supabase
       .channel('operator-queue')
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'queue',
         filter: `business_id=eq.${businessId}`
-      }, () => fetchAll())
+      }, () => fetchAll(null)) // realtime — без автовызова чтобы не зациклиться
       .subscribe();
 
     const busChannel = supabase
@@ -110,67 +138,36 @@ export default function OperatorPanel({ businessId }) {
 
   // ── Действия ─────────────────────────────────────────────────────────────
 
-  // Оператор запускает мойку вручную (confirmed или missed → in_box)
   const handleStartWash = async (item) => {
     try {
       await supabase
         .from('queue')
-        .update({
-          status: 'in_box',
-          started_at: new Date().toISOString(),
-        })
+        .update({ status: 'in_box', started_at: new Date().toISOString() })
         .eq('id', item.id);
     } catch (err) {
       console.error('Error starting wash:', err);
     }
   };
 
-  // Завершение мойки
   const handleCompleteWash = async () => {
     if (!confirmComplete) return;
     try {
       await supabase
         .from('queue')
-        .update({
-          status: 'completed',
-          completed_at: new Date().toISOString(),
-        })
+        .update({ status: 'completed', completed_at: new Date().toISOString() })
         .eq('id', confirmComplete.id);
 
-      // Вызываем следующего: первый confirmed или первый waiting
-      await inviteNext();
       setConfirmComplete(null);
+
+      // После завершения пересчитываем и вызываем следующего
+      // Временно убираем завершённую машину из washing для правильного подсчёта
+      const updatedWashing = washing.filter(i => i.id !== confirmComplete.id);
+      await inviteNext(updatedWashing, confirming, waiting, business);
     } catch (err) {
       console.error('Error completing wash:', err);
     }
   };
 
-  // Вызов следующего клиента (ставим статус confirmed + invited_at)
-  const inviteNext = async () => {
-    try {
-      // Сколько боксов займут уже подтверждённые + моющиеся после завершения текущего
-      const activeCount = washing.length - 1 + confirming.length; // -1 потому что один только что завершён
-      const freeSlots = Math.max(0, (business?.boxes_count || 1) - activeCount);
-
-      if (freeSlots <= 0) return;
-
-      // Берём первых N из waiting
-      const toInvite = waiting.slice(0, freeSlots);
-      if (toInvite.length === 0) return;
-
-      const now = new Date().toISOString();
-      for (const item of toInvite) {
-        await supabase
-          .from('queue')
-          .update({ status: 'confirmed', invited_at: now })
-          .eq('id', item.id);
-      }
-    } catch (err) {
-      console.error('Error inviting next:', err);
-    }
-  };
-
-  // Исключить из очереди
   const handleKick = async (item) => {
     if (!confirm(`Исключить машину ${item.plate_number} из очереди?`)) return;
     try {
@@ -183,7 +180,6 @@ export default function OperatorPanel({ businessId }) {
     }
   };
 
-  // Ручное добавление
   const handleAddManual = async (e) => {
     e.preventDefault();
     if (!plateNumber.trim()) return;
@@ -215,7 +211,7 @@ export default function OperatorPanel({ businessId }) {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   };
 
-  const formatCountdownFromInvited = (invitedAt) => {
+  const formatCountdown = (invitedAt) => {
     if (!invitedAt || !business) return null;
     const timeout = business.confirmation_timeout || 180;
     const elapsed = Math.floor((nowTime - new Date(invitedAt)) / 1000);
@@ -241,241 +237,240 @@ export default function OperatorPanel({ businessId }) {
 
   return (
     <>
-    <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
+      <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
 
-      {/* Шапка */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
-        <div>
-          <h1 style={{ fontSize: '2rem' }}>Панель оператора</h1>
-          <p style={{ color: 'var(--text-secondary)' }}>
-            {business.name} · Боксов: {business.boxes_count}
-          </p>
+        {/* Шапка */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
+          <div>
+            <h1 style={{ fontSize: '2rem' }}>Панель оператора</h1>
+            <p style={{ color: 'var(--text-secondary)' }}>
+              {business.name} · Боксов: {business.boxes_count}
+            </p>
+          </div>
+          <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
+            <Plus size={18} /> Добавить вручную
+          </button>
         </div>
-        <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
-          <Plus size={18} /> Добавить вручную
-        </button>
-      </div>
 
-      {/* ── ЗОНА 1: МОЮТСЯ ─────────────────────────────────────────────────── */}
-      <section style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
-          Моются ({washing.length})
-        </h2>
+        {/* ── ЗОНА 1: МОЮТСЯ ───────────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-success)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
+            Моются ({washing.length})
+          </h2>
 
-        {washing.length === 0 ? (
-          <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-            Боксы свободны
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {washing.map(item => (
-              <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(34,197,94,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                  <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
-                    {item.plate_number}
-                  </span>
-                  <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: 'var(--color-success)', fontWeight: 700 }}>
-                    {formatElapsed(item.started_at)}
-                  </span>
-                </div>
-                <button
-                  className="btn btn-success"
-                  style={{ padding: '0.5rem 1.25rem' }}
-                  onClick={() => setConfirmComplete(item)}
-                >
-                  Мойка завершена
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* ── ЗОНА 2: ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ ──────────────────────────────────── */}
-      <section style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-warning)', display: 'inline-block' }} />
-          Ожидают подтверждения ({confirming.length})
-        </h2>
-
-        {confirming.length === 0 ? (
-          <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-            Нет вызванных клиентов
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            {confirming.map(item => {
-              const countdown = formatCountdownFromInvited(item.invited_at);
-              return (
-                <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(245,158,11,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
+          {washing.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Боксы свободны
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {washing.map(item => (
+                <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(34,197,94,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
                     <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
                       {item.plate_number}
                     </span>
-                    {countdown && (
-                      <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>
-                        осталось {countdown}
-                      </span>
-                    )}
+                    <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: 'var(--color-success)', fontWeight: 700 }}>
+                      {formatElapsed(item.started_at)}
+                    </span>
                   </div>
                   <button
-                    className="btn btn-primary"
+                    className="btn btn-success"
                     style={{ padding: '0.5rem 1.25rem' }}
-                    onClick={() => handleStartWash(item)}
+                    onClick={() => setConfirmComplete(item)}
                   >
-                    Начать мойку
+                    Мойка завершена
                   </button>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
+              ))}
+            </div>
+          )}
+        </section>
 
-      {/* ── ЗОНА 3: ОЧЕРЕДЬ ────────────────────────────────────────────────── */}
-      <section style={{ marginBottom: '2rem' }}>
-        <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent-color)', display: 'inline-block' }} />
-          Очередь ({waiting.length})
-        </h2>
+        {/* ── ЗОНА 2: ОЖИДАЮТ ПОДТВЕРЖДЕНИЯ ───────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-warning)', display: 'inline-block' }} />
+            Ожидают подтверждения ({confirming.length})
+          </h2>
 
-        {waiting.length === 0 && missed.length === 0 ? (
-          <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-            Очередь пуста
-          </div>
-        ) : (
-          <div className="table-container">
-            <table className="custom-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Гос. номер</th>
-                  <th>Ждёт с</th>
-                  <th>Добавил</th>
-                  <th>Действие</th>
-                </tr>
-              </thead>
-              <tbody>
-                {waiting.map((item, idx) => (
-                  <tr key={item.id}>
-                    <td style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{idx + 1}</td>
-                    <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
-                    <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                    <td>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
+          {confirming.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Нет вызванных клиентов
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {confirming.map(item => {
+                const countdown = formatCountdown(item.invited_at);
+                return (
+                  <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(245,158,11,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
+                        {item.plate_number}
                       </span>
-                    </td>
-                    <td>
-                      <button
-                        className="btn btn-secondary"
-                        style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem', color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.2)' }}
-                        onClick={() => handleKick(item)}
-                      >
-                        Исключить
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      {countdown && (
+                        <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>
+                          осталось {countdown}
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="btn btn-primary"
+                      style={{ padding: '0.5rem 1.25rem' }}
+                      onClick={() => handleStartWash(item)}
+                    >
+                      Начать мойку
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
 
-                {/* Не ответили — отделены визуально */}
-                {missed.length > 0 && (
-                  <>
-                    <tr>
-                      <td colSpan={5} style={{ padding: '0.5rem 1rem', background: 'rgba(239,68,68,0.05)', borderTop: '1px solid rgba(239,68,68,0.2)' }}>
-                        <span style={{ fontSize: '0.8125rem', color: 'var(--color-danger)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                          <AlertTriangle size={14} /> Не ответили на вызов
+        {/* ── ЗОНА 3: ОЧЕРЕДЬ ──────────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent-color)', display: 'inline-block' }} />
+            Очередь ({waiting.length})
+          </h2>
+
+          {waiting.length === 0 && missed.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
+              Очередь пуста
+            </div>
+          ) : (
+            <div className="table-container">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Гос. номер</th>
+                    <th>Ждёт с</th>
+                    <th>Добавил</th>
+                    <th>Действие</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {waiting.map((item, idx) => (
+                    <tr key={item.id}>
+                      <td style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{idx + 1}</td>
+                      <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                      <td>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                          {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
                         </span>
                       </td>
+                      <td>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem', color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.2)' }}
+                          onClick={() => handleKick(item)}
+                        >
+                          Исключить
+                        </button>
+                      </td>
                     </tr>
-                    {missed.map(item => (
-                      <tr key={item.id} style={{ opacity: 0.85 }}>
-                        <td style={{ color: 'var(--color-danger)' }}>⚠️</td>
-                        <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
-                        <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                        <td>
-                          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                            {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
+                  ))}
+
+                  {missed.length > 0 && (
+                    <>
+                      <tr>
+                        <td colSpan={5} style={{ padding: '0.5rem 1rem', background: 'rgba(239,68,68,0.05)', borderTop: '1px solid rgba(239,68,68,0.2)' }}>
+                          <span style={{ fontSize: '0.8125rem', color: 'var(--color-danger)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <AlertTriangle size={14} /> Не ответили на вызов
                           </span>
                         </td>
-                        <td>
-                          <button
-                            className="btn btn-primary"
-                            style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }}
-                            onClick={() => handleStartWash(item)}
-                          >
-                            Начать мойку
-                          </button>
-                        </td>
                       </tr>
-                    ))}
-                  </>
-                )}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-    </div>
-
-    {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ — вне контейнера через Portal ── */}
-    {confirmComplete && ReactDOM.createPortal(
-      <div className="modal-overlay">
-        <div className="modal-content" style={{ textAlign: 'center' }}>
-          <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
-            <CheckSquare size={48} style={{ margin: '0 auto' }} />
-          </div>
-          <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Завершить мойку?</h3>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
-            Автомобиль с гос. номером:<br />
-            <strong style={{ fontSize: '1.35rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-              {confirmComplete.plate_number}
-            </strong>
-          </p>
-          <div style={{ display: 'flex', gap: '1rem' }}>
-            <button className="btn btn-success" style={{ flex: 1 }} onClick={handleCompleteWash}>ДА</button>
-            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setConfirmComplete(null)}>ОТМЕНА</button>
-          </div>
-        </div>
-      </div>,
-      document.body
-    )}
-
-    {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ — вне контейнера через Portal ── */}
-    {showAddModal && ReactDOM.createPortal(
-      <div className="modal-overlay">
-        <div className="modal-content">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-            <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
-            <button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-              <X size={20} />
-            </button>
-          </div>
-          <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div>
-              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                Гос. номер *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="А777АА177"
-                value={plateNumber}
-                onChange={(e) => setPlateNumber(e.target.value)}
-                style={{ textTransform: 'uppercase' }}
-              />
+                      {missed.map(item => (
+                        <tr key={item.id} style={{ opacity: 0.85 }}>
+                          <td style={{ color: 'var(--color-danger)' }}>⚠️</td>
+                          <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
+                          <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                          <td>
+                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="btn btn-primary"
+                              style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }}
+                              onClick={() => handleStartWash(item)}
+                            >
+                              Начать мойку
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </>
+                  )}
+                </tbody>
+              </table>
             </div>
+          )}
+        </section>
+
+      </div>
+
+      {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ ── Portal ── */}
+      {confirmComplete && ReactDOM.createPortal(
+        <div className="modal-overlay">
+          <div className="modal-content" style={{ textAlign: 'center' }}>
+            <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
+              <CheckSquare size={48} style={{ margin: '0 auto' }} />
+            </div>
+            <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Завершить мойку?</h3>
+            <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
+              Автомобиль с гос. номером:<br />
+              <strong style={{ fontSize: '1.35rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+                {confirmComplete.plate_number}
+              </strong>
+            </p>
             <div style={{ display: 'flex', gap: '1rem' }}>
-              <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
-              <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>Отмена</button>
+              <button className="btn btn-success" style={{ flex: 1 }} onClick={handleCompleteWash}>ДА</button>
+              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setConfirmComplete(null)}>ОТМЕНА</button>
             </div>
-          </form>
-        </div>
-      </div>,
-      document.body
-    )}
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ ── Portal ── */}
+      {showAddModal && ReactDOM.createPortal(
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+              <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
+              <button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+              <div>
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                  Гос. номер *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="А777АА177"
+                  value={plateNumber}
+                  onChange={(e) => setPlateNumber(e.target.value)}
+                  style={{ textTransform: 'uppercase' }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: '1rem' }}>
+                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
+                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>Отмена</button>
+              </div>
+            </form>
+          </div>
+        </div>,
+        document.body
+      )}
     </>
   );
 }
