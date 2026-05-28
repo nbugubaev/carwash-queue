@@ -19,8 +19,20 @@ export default function OperatorPanel({ businessId }) {
   const [showAddModal, setShowAddModal] = useState(false);
   const [plateNumber, setPlateNumber] = useState('');
 
-  // Пропускаем первый рендер при изменении offlineBoxes
+  // Refs для актуальных значений внутри замыканий
+  const businessRef = useRef(null);
+  const washingRef = useRef([]);
+  const confirmingRef = useRef([]);
+  const waitingRef = useRef([]);
+  const offlineBoxesRef = useRef([]);
   const isFirstOfflineRender = useRef(true);
+
+  // Синхронизируем refs при изменении state
+  useEffect(() => { businessRef.current = business; }, [business]);
+  useEffect(() => { washingRef.current = washing; }, [washing]);
+  useEffect(() => { confirmingRef.current = confirming; }, [confirming]);
+  useEffect(() => { waitingRef.current = waiting; }, [waiting]);
+  useEffect(() => { offlineBoxesRef.current = offlineBoxes; }, [offlineBoxes]);
 
   // ── Вызов следующих клиентов ─────────────────────────────────────────────
 
@@ -101,13 +113,21 @@ export default function OperatorPanel({ businessId }) {
       setWaiting(newWaiting);
       setMissed(newMissed);
 
-      if (autoInvite && currentBusiness) {
-        await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness, currentBusiness.offline_boxes || []);
+      // Обновляем refs сразу — не ждём следующего рендера
+      washingRef.current = newWashing;
+      confirmingRef.current = newConfirming;
+      waitingRef.current = newWaiting;
+
+      const biz = currentBusiness || businessRef.current;
+      if (autoInvite && biz) {
+        await inviteNext(newWashing, newConfirming, newWaiting, biz, biz.offline_boxes || []);
       }
     } catch (err) {
       console.error('fetchAll error:', err);
     }
   }, [businessId, supabase, inviteNext]);
+
+  // ── Инициализация и подписки ──────────────────────────────────────────────
 
   useEffect(() => {
     if (!supabase || !businessId) return;
@@ -122,7 +142,9 @@ export default function OperatorPanel({ businessId }) {
           .single();
         if (error) throw error;
         setBusiness(data);
+        businessRef.current = data;
         setOfflineBoxes(data.offline_boxes || []);
+        offlineBoxesRef.current = data.offline_boxes || [];
         await fetchAll(data, true);
       } catch (err) {
         console.error('Error loading business:', err);
@@ -133,12 +155,51 @@ export default function OperatorPanel({ businessId }) {
 
     init();
 
+    // Realtime очереди — используем refs чтобы всегда иметь актуальные данные
     const qChannel = supabase
       .channel('operator-queue')
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'queue',
         filter: `business_id=eq.${businessId}`
-      }, () => fetchAll(null, false))
+      }, async (payload) => {
+        // Перезагружаем очередь
+        const { data: active } = await supabase
+          .from('queue')
+          .select('*')
+          .eq('business_id', businessId)
+          .in('status', ['waiting', 'confirmed', 'in_box'])
+          .order('joined_at', { ascending: true });
+
+        const { data: cancelled } = await supabase
+          .from('queue')
+          .select('*')
+          .eq('business_id', businessId)
+          .eq('status', 'cancelled')
+          .not('invited_at', 'is', null)
+          .order('cancelled_at', { ascending: false })
+          .limit(20);
+
+        const all = active || [];
+        const newWashing    = all.filter(i => i.status === 'in_box');
+        const newConfirming = all.filter(i => i.status === 'confirmed');
+        const newWaiting    = all.filter(i => i.status === 'waiting');
+
+        setWashing(newWashing);
+        setConfirming(newConfirming);
+        setWaiting(newWaiting);
+        setMissed(cancelled || []);
+
+        // Обновляем refs сразу
+        washingRef.current = newWashing;
+        confirmingRef.current = newConfirming;
+        waitingRef.current = newWaiting;
+
+        // Вызываем следующего если есть свободные слоты
+        const biz = businessRef.current;
+        if (biz) {
+          await inviteNext(newWashing, newConfirming, newWaiting, biz, offlineBoxesRef.current);
+        }
+      })
       .subscribe();
 
     const busChannel = supabase
@@ -148,7 +209,9 @@ export default function OperatorPanel({ businessId }) {
         filter: `id=eq.${businessId}`
       }, (payload) => {
         setBusiness(payload.new);
+        businessRef.current = payload.new;
         setOfflineBoxes(payload.new.offline_boxes || []);
+        offlineBoxesRef.current = payload.new.offline_boxes || [];
       })
       .subscribe();
 
@@ -156,18 +219,17 @@ export default function OperatorPanel({ businessId }) {
       supabase.removeChannel(qChannel);
       supabase.removeChannel(busChannel);
     };
-  }, [businessId, supabase, fetchAll]);
+  }, [businessId, supabase, fetchAll, inviteNext]);
 
-  // ── При включении бокса — вызываем следующего из очереди ─────────────────
+  // ── При включении бокса — вызываем следующего ────────────────────────────
 
   useEffect(() => {
-    // Пропускаем первый рендер — при загрузке уже вызывается inviteNext в init()
     if (isFirstOfflineRender.current) {
       isFirstOfflineRender.current = false;
       return;
     }
-    if (!business || loading) return;
-    inviteNext(washing, confirming, waiting, business, offlineBoxes);
+    if (!businessRef.current || loading) return;
+    inviteNext(washingRef.current, confirmingRef.current, waitingRef.current, businessRef.current, offlineBoxes);
   }, [offlineBoxes]);
 
   // Живые таймеры + проверка истёкших
@@ -192,6 +254,7 @@ export default function OperatorPanel({ businessId }) {
       : [...offlineBoxes, boxNum];
 
     setOfflineBoxes(updated);
+    offlineBoxesRef.current = updated;
     try {
       await supabase
         .from('businesses')
@@ -200,6 +263,7 @@ export default function OperatorPanel({ businessId }) {
     } catch (err) {
       console.error('Error toggling box:', err);
       setOfflineBoxes(offlineBoxes);
+      offlineBoxesRef.current = offlineBoxes;
     }
   };
 
@@ -223,8 +287,8 @@ export default function OperatorPanel({ businessId }) {
         .from('queue')
         .update({ status: 'completed', completed_at: new Date().toISOString() })
         .eq('id', confirmComplete.id);
-      const updatedWashing = washing.filter(i => i.id !== confirmComplete.id);
-      await inviteNext(updatedWashing, confirming, waiting, business, offlineBoxes);
+      const updatedWashing = washingRef.current.filter(i => i.id !== confirmComplete.id);
+      await inviteNext(updatedWashing, confirmingRef.current, waitingRef.current, businessRef.current, offlineBoxesRef.current);
       setConfirmComplete(null);
     } catch (err) {
       console.error('Error completing wash:', err);
