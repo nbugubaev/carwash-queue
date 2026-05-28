@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import ReactDOM from 'react-dom';
 import { getSupabase } from '../supabase';
 import { RefreshCw, Plus, X, CheckSquare, AlertTriangle } from 'lucide-react';
 
@@ -239,6 +240,7 @@ export default function OperatorPanel({ businessId }) {
   }
 
   return (
+    <>
     <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
 
       {/* Шапка */}
@@ -416,60 +418,64 @@ export default function OperatorPanel({ businessId }) {
         )}
       </section>
 
-      {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ ────────────────────────────────────────── */}
-      {confirmComplete && (
-        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
-          <div className="modal-content" style={{ textAlign: 'center' }}>
-            <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
-              <CheckSquare size={48} style={{ margin: '0 auto' }} />
-            </div>
-            <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Завершить мойку?</h3>
-            <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
-              Автомобиль с гос. номером:<br />
-              <strong style={{ fontSize: '1.35rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
-                {confirmComplete.plate_number}
-              </strong>
-            </p>
-            <div style={{ display: 'flex', gap: '1rem' }}>
-              <button className="btn btn-success" style={{ flex: 1 }} onClick={handleCompleteWash}>ДА</button>
-              <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setConfirmComplete(null)}>ОТМЕНА</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ ───────────────────────────────────────── */}
-      {showAddModal && (
-        <div className="modal-overlay" style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(4px)' }}>
-          <div className="modal-content">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
-              <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
-              <button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                <X size={20} />
-              </button>
-            </div>
-            <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-              <div>
-                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                  Гос. номер *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="А777АА177"
-                  value={plateNumber}
-                  onChange={(e) => setPlateNumber(e.target.value)}
-                  style={{ textTransform: 'uppercase' }}
-                />
-              </div>
-              <div style={{ display: 'flex', gap: '1rem' }}>
-                <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
-                <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>Отмена</button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
+
+    {/* ── МОДАЛКА: ЗАВЕРШЕНИЕ МОЙКИ — вне контейнера через Portal ── */}
+    {confirmComplete && ReactDOM.createPortal(
+      <div className="modal-overlay">
+        <div className="modal-content" style={{ textAlign: 'center' }}>
+          <div style={{ color: 'var(--color-success)', marginBottom: '1rem' }}>
+            <CheckSquare size={48} style={{ margin: '0 auto' }} />
+          </div>
+          <h3 style={{ fontSize: '1.5rem', marginBottom: '0.75rem' }}>Завершить мойку?</h3>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem', lineHeight: 1.4 }}>
+            Автомобиль с гос. номером:<br />
+            <strong style={{ fontSize: '1.35rem', fontFamily: 'monospace', color: 'var(--text-primary)' }}>
+              {confirmComplete.plate_number}
+            </strong>
+          </p>
+          <div style={{ display: 'flex', gap: '1rem' }}>
+            <button className="btn btn-success" style={{ flex: 1 }} onClick={handleCompleteWash}>ДА</button>
+            <button className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setConfirmComplete(null)}>ОТМЕНА</button>
+          </div>
+        </div>
+      </div>,
+      document.body
+    )}
+
+    {/* ── МОДАЛКА: РУЧНОЕ ДОБАВЛЕНИЕ — вне контейнера через Portal ── */}
+    {showAddModal && ReactDOM.createPortal(
+      <div className="modal-overlay">
+        <div className="modal-content">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
+            <h3 style={{ fontSize: '1.25rem' }}>Добавить клиента вручную</h3>
+            <button onClick={() => setShowAddModal(false)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+              <X size={20} />
+            </button>
+          </div>
+          <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+            <div>
+              <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                Гос. номер *
+              </label>
+              <input
+                type="text"
+                required
+                placeholder="А777АА177"
+                value={plateNumber}
+                onChange={(e) => setPlateNumber(e.target.value)}
+                style={{ textTransform: 'uppercase' }}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
+              <button type="button" className="btn btn-secondary" style={{ flex: 1 }} onClick={() => setShowAddModal(false)}>Отмена</button>
+            </div>
+          </form>
+        </div>
+      </div>,
+      document.body
+    )}
+    </>
   );
 }
