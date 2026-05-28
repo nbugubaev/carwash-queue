@@ -19,7 +19,6 @@ export default function OperatorPanel({ businessId }) {
   const [plateNumber, setPlateNumber] = useState('');
 
   // ── Вызов следующих клиентов ─────────────────────────────────────────────
-  // Принимает актуальные данные напрямую (не из state)
 
   const inviteNext = useCallback(async (currentWashing, currentConfirming, currentWaiting, currentBusiness) => {
     if (!supabase || !currentBusiness) return;
@@ -30,7 +29,6 @@ export default function OperatorPanel({ businessId }) {
 
       const toInvite = currentWaiting.slice(0, freeSlots);
       const now = new Date().toISOString();
-
       for (const item of toInvite) {
         await supabase
           .from('queue')
@@ -42,9 +40,37 @@ export default function OperatorPanel({ businessId }) {
     }
   }, [supabase]);
 
+  // ── Авто-отмена confirmed машин у которых истёк таймер ───────────────────
+
+  const checkExpiredConfirmed = useCallback(async (currentConfirming, currentWaiting, currentBusiness) => {
+    if (!supabase || !currentBusiness || currentConfirming.length === 0) return;
+
+    const timeout = currentBusiness.confirmation_timeout || 180;
+    const now = new Date();
+    const expired = currentConfirming.filter(item => {
+      if (!item.invited_at) return false;
+      const elapsed = Math.floor((now - new Date(item.invited_at)) / 1000);
+      return elapsed >= timeout;
+    });
+
+    if (expired.length === 0) return;
+
+    const cancelledAt = now.toISOString();
+    for (const item of expired) {
+      await supabase
+        .from('queue')
+        .update({ status: 'cancelled', cancelled_at: cancelledAt })
+        .eq('id', item.id);
+    }
+
+    // Вызываем следующих на освободившиеся слоты
+    const remainingConfirming = currentConfirming.filter(i => !expired.find(e => e.id === i.id));
+    await inviteNext([], remainingConfirming, currentWaiting, currentBusiness);
+  }, [supabase, inviteNext]);
+
   // ── Загрузка данных ───────────────────────────────────────────────────────
 
-  const fetchAll = useCallback(async (currentBusiness) => {
+  const fetchAll = useCallback(async (currentBusiness, autoInvite = false) => {
     if (!supabase || !businessId) return;
     try {
       const { data: active } = await supabase
@@ -64,18 +90,17 @@ export default function OperatorPanel({ businessId }) {
         .limit(20);
 
       const all = active || [];
-      const newWashing   = all.filter(i => i.status === 'in_box');
+      const newWashing    = all.filter(i => i.status === 'in_box');
       const newConfirming = all.filter(i => i.status === 'confirmed');
-      const newWaiting   = all.filter(i => i.status === 'waiting');
-      const newMissed    = cancelled || [];
+      const newWaiting    = all.filter(i => i.status === 'waiting');
+      const newMissed     = cancelled || [];
 
       setWashing(newWashing);
       setConfirming(newConfirming);
       setWaiting(newWaiting);
       setMissed(newMissed);
 
-      // Автовызов: если есть свободные боксы и есть waiting — вызываем
-      if (currentBusiness) {
+      if (autoInvite && currentBusiness) {
         await inviteNext(newWashing, newConfirming, newWaiting, currentBusiness);
       }
     } catch (err) {
@@ -96,9 +121,7 @@ export default function OperatorPanel({ businessId }) {
           .single();
         if (error) throw error;
         setBusiness(data);
-
-        // Загружаем очередь и сразу вызываем следующих если боксы свободны
-        await fetchAll(data);
+        await fetchAll(data, true); // autoInvite при загрузке
       } catch (err) {
         console.error('Error loading business:', err);
       } finally {
@@ -113,7 +136,7 @@ export default function OperatorPanel({ businessId }) {
       .on('postgres_changes', {
         event: '*', schema: 'public', table: 'queue',
         filter: `business_id=eq.${businessId}`
-      }, () => fetchAll(null)) // realtime — без автовызова чтобы не зациклиться
+      }, () => fetchAll(null, false))
       .subscribe();
 
     const busChannel = supabase
@@ -130,11 +153,19 @@ export default function OperatorPanel({ businessId }) {
     };
   }, [businessId, supabase, fetchAll]);
 
-  // Живые таймеры
+  // Живые таймеры + проверка истёкших confirmed каждые 5 секунд
   useEffect(() => {
     const timer = setInterval(() => setNowTime(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!business || confirming.length === 0) return;
+    const checker = setInterval(() => {
+      checkExpiredConfirmed(confirming, waiting, business);
+    }, 5000);
+    return () => clearInterval(checker);
+  }, [confirming, waiting, business, checkExpiredConfirmed]);
 
   // ── Действия ─────────────────────────────────────────────────────────────
 
@@ -157,12 +188,9 @@ export default function OperatorPanel({ businessId }) {
         .update({ status: 'completed', completed_at: new Date().toISOString() })
         .eq('id', confirmComplete.id);
 
-      setConfirmComplete(null);
-
-      // После завершения пересчитываем и вызываем следующего
-      // Временно убираем завершённую машину из washing для правильного подсчёта
       const updatedWashing = washing.filter(i => i.id !== confirmComplete.id);
       await inviteNext(updatedWashing, confirming, waiting, business);
+      setConfirmComplete(null);
     } catch (err) {
       console.error('Error completing wash:', err);
     }
@@ -243,9 +271,7 @@ export default function OperatorPanel({ businessId }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
             <h1 style={{ fontSize: '2rem' }}>Панель оператора</h1>
-            <p style={{ color: 'var(--text-secondary)' }}>
-              {business.name} · Боксов: {business.boxes_count}
-            </p>
+            <p style={{ color: 'var(--text-secondary)' }}>{business.name} · Боксов: {business.boxes_count}</p>
           </div>
           <button className="btn btn-primary" onClick={() => setShowAddModal(true)}>
             <Plus size={18} /> Добавить вручную
@@ -258,28 +284,17 @@ export default function OperatorPanel({ businessId }) {
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-success)', display: 'inline-block' }} />
             Моются ({washing.length})
           </h2>
-
           {washing.length === 0 ? (
-            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-              Боксы свободны
-            </div>
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>Боксы свободны</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {washing.map(item => (
                 <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(34,197,94,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                    <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
-                      {item.plate_number}
-                    </span>
-                    <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: 'var(--color-success)', fontWeight: 700 }}>
-                      {formatElapsed(item.started_at)}
-                    </span>
+                    <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>{item.plate_number}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: '1.1rem', color: 'var(--color-success)', fontWeight: 700 }}>{formatElapsed(item.started_at)}</span>
                   </div>
-                  <button
-                    className="btn btn-success"
-                    style={{ padding: '0.5rem 1.25rem' }}
-                    onClick={() => setConfirmComplete(item)}
-                  >
+                  <button className="btn btn-success" style={{ padding: '0.5rem 1.25rem' }} onClick={() => setConfirmComplete(item)}>
                     Мойка завершена
                   </button>
                 </div>
@@ -294,11 +309,8 @@ export default function OperatorPanel({ businessId }) {
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--color-warning)', display: 'inline-block' }} />
             Ожидают подтверждения ({confirming.length})
           </h2>
-
           {confirming.length === 0 ? (
-            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-              Нет вызванных клиентов
-            </div>
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>Нет вызванных клиентов</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
               {confirming.map(item => {
@@ -306,24 +318,14 @@ export default function OperatorPanel({ businessId }) {
                 return (
                   <div key={item.id} className="glass-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 1.25rem', border: '1px solid rgba(245,158,11,0.3)', flexWrap: 'wrap', gap: '0.75rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>
-                        {item.plate_number}
-                      </span>
+                      <span style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.25rem' }}>{item.plate_number}</span>
                       {item.presence_confirmed ? (
-                        <span style={{ fontSize: '0.9rem', color: 'var(--color-success)', fontWeight: 600 }}>
-                          ✓ Едет
-                        </span>
+                        <span style={{ fontSize: '0.9rem', color: 'var(--color-success)', fontWeight: 600 }}>✓ Едет</span>
                       ) : countdown ? (
-                        <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>
-                          осталось {countdown}
-                        </span>
+                        <span style={{ fontFamily: 'monospace', fontSize: '1rem', color: 'var(--color-warning)', fontWeight: 600 }}>осталось {countdown}</span>
                       ) : null}
                     </div>
-                    <button
-                      className="btn btn-primary"
-                      style={{ padding: '0.5rem 1.25rem' }}
-                      onClick={() => handleStartWash(item)}
-                    >
+                    <button className="btn btn-primary" style={{ padding: '0.5rem 1.25rem' }} onClick={() => handleStartWash(item)}>
                       Начать мойку
                     </button>
                   </div>
@@ -339,11 +341,8 @@ export default function OperatorPanel({ businessId }) {
             <span style={{ width: 10, height: 10, borderRadius: '50%', background: 'var(--accent-color)', display: 'inline-block' }} />
             Очередь ({waiting.length})
           </h2>
-
-          {waiting.length === 0 && missed.length === 0 ? (
-            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-              Очередь пуста
-            </div>
+          {waiting.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>Очередь пуста</div>
           ) : (
             <div className="table-container">
               <table className="custom-table">
@@ -362,55 +361,52 @@ export default function OperatorPanel({ businessId }) {
                       <td style={{ color: 'var(--text-muted)', fontWeight: 600 }}>{idx + 1}</td>
                       <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
                       <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
+                      <td><span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}</span></td>
                       <td>
-                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                          {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          className="btn btn-secondary"
-                          style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem', color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.2)' }}
-                          onClick={() => handleKick(item)}
-                        >
+                        <button className="btn btn-secondary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem', color: 'var(--color-danger)', borderColor: 'rgba(239,68,68,0.2)' }} onClick={() => handleKick(item)}>
                           Исключить
                         </button>
                       </td>
                     </tr>
                   ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
 
-                  {missed.length > 0 && (
-                    <>
-                      <tr>
-                        <td colSpan={5} style={{ padding: '0.5rem 1rem', background: 'rgba(239,68,68,0.05)', borderTop: '1px solid rgba(239,68,68,0.2)' }}>
-                          <span style={{ fontSize: '0.8125rem', color: 'var(--color-danger)', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                            <AlertTriangle size={14} /> Не ответили на вызов
-                          </span>
-                        </td>
-                      </tr>
-                      {missed.map(item => (
-                        <tr key={item.id} style={{ opacity: 0.85 }}>
-                          <td style={{ color: 'var(--color-danger)' }}>⚠️</td>
-                          <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
-                          <td style={{ color: 'var(--text-secondary)' }}>{new Date(item.joined_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</td>
-                          <td>
-                            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                              {item.created_by === 'operator' ? '👤 Оператор' : '📱 Клиент'}
-                            </span>
-                          </td>
-                          <td>
-                            <button
-                              className="btn btn-primary"
-                              style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }}
-                              onClick={() => handleStartWash(item)}
-                            >
-                              Начать мойку
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </>
-                  )}
+        {/* ── ЗОНА 4: НЕ ОТВЕТИЛИ ──────────────────────────────────────────── */}
+        <section style={{ marginBottom: '2rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '1rem', color: 'var(--color-danger)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <AlertTriangle size={18} />
+            Не ответили ({missed.length})
+          </h2>
+          {missed.length === 0 ? (
+            <div className="glass-panel" style={{ padding: '1.25rem', color: 'var(--text-muted)', textAlign: 'center' }}>Нет пропущенных вызовов</div>
+          ) : (
+            <div className="table-container">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>Гос. номер</th>
+                    <th>Был вызван в</th>
+                    <th>Отменён в</th>
+                    <th>Действие</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {missed.map(item => (
+                    <tr key={item.id}>
+                      <td style={{ fontFamily: 'monospace', fontWeight: 800, fontSize: '1.1rem' }}>{item.plate_number}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{item.invited_at ? new Date(item.invited_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{item.cancelled_at ? new Date(item.cancelled_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—'}</td>
+                      <td>
+                        <button className="btn btn-primary" style={{ padding: '0.35rem 0.75rem', fontSize: '0.8125rem' }} onClick={() => handleStartWash(item)}>
+                          Начать мойку
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -454,17 +450,8 @@ export default function OperatorPanel({ businessId }) {
             </div>
             <form onSubmit={handleAddManual} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
               <div>
-                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-                  Гос. номер *
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="А777АА177"
-                  value={plateNumber}
-                  onChange={(e) => setPlateNumber(e.target.value)}
-                  style={{ textTransform: 'uppercase' }}
-                />
+                <label style={{ display: 'block', marginBottom: '0.5rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Гос. номер *</label>
+                <input type="text" required placeholder="А777АА177" value={plateNumber} onChange={(e) => setPlateNumber(e.target.value)} style={{ textTransform: 'uppercase' }} />
               </div>
               <div style={{ display: 'flex', gap: '1rem' }}>
                 <button type="submit" className="btn btn-primary" style={{ flex: 1 }}>Добавить в очередь</button>
