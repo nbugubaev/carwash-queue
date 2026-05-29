@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { getSupabase } from '../supabase';
 import { RefreshCw, LogOut, Users, Car, TrendingUp, Clock, CheckCircle, XCircle, AlertTriangle, BarChart2 } from 'lucide-react';
 
-const ADMIN_EMAILS = ['your@email.com']; // ← замени на свои email
+const ADMIN_EMAILS = ['nbugubaev@gmail.com']; // ← замени на свои email
 
 const RANGES = [
   { label: 'Сегодня', value: 'today' },
