@@ -2,8 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { getSupabase } from '../supabase';
 import { RefreshCw, LogOut, Users, Car, TrendingUp, Clock, CheckCircle, XCircle, AlertTriangle, BarChart2 } from 'lucide-react';
 
-const ADMIN_EMAILS = ['your@email.com']; // ← замени на свои email
-
 const RANGES = [
   { label: 'Сегодня', value: 'today' },
   { label: '7 дней', value: '7days' },
@@ -31,14 +29,8 @@ function getDateFrom(range) {
 
 export default function AdminDashboard({ onLogout }) {
   const supabase = getSupabase();
-  const [session, setSession] = useState(null);
-  const [accessDenied, setAccessDenied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [statsLoading, setStatsLoading] = useState(false);
-
-  const [authError, setAuthError] = useState('');
-  const [authLoading, setAuthLoading] = useState(false);
-
   const [range, setRange] = useState('30days');
 
   // ── Данные ───────────────────────────────────────────────────────────────
@@ -54,40 +46,16 @@ export default function AdminDashboard({ onLogout }) {
   const [topBusinesses, setTopBusinesses] = useState([]);
   const [retentionData, setRetentionData] = useState([]);
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-
   useEffect(() => {
-    if (!supabase) return;
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session) {
-        if (!ADMIN_EMAILS.includes(session.user.email)) {
-          setAccessDenied(true);
-        } else {
-          setSession(session);
-        }
-      }
+    if (supabase) {
       setLoading(false);
-    });
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
-      if (session) {
-        if (!ADMIN_EMAILS.includes(session.user.email)) {
-          setAccessDenied(true);
-          setSession(null);
-        } else {
-          setAccessDenied(false);
-          setSession(session);
-        }
-      } else {
-        setSession(null);
-        setAccessDenied(false);
-      }
-    });
-    return () => subscription.unsubscribe();
+      fetchStats();
+    }
   }, [supabase]);
 
   useEffect(() => {
-    if (session) fetchStats();
-  }, [session, range]);
+    if (supabase) fetchStats();
+  }, [range]);
 
   // ── Загрузка статистики ───────────────────────────────────────────────────
 
@@ -227,28 +195,9 @@ export default function AdminDashboard({ onLogout }) {
     }
   };
 
-  const handleAuth = async (e) => {
-    e.preventDefault();
-    setAuthLoading(true);
-    setAuthError('');
-    try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: `${window.location.origin}${window.location.pathname}?role=admin`
-        }
-      });
-      if (error) throw error;
-    } catch (err) {
-      setAuthError(err.message);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
-
-  const handleSignOut = async () => {
-    await supabase.auth.signOut();
+  const handleSignOut = () => {
     if (onLogout) onLogout();
+    window.location.search = '';
   };
 
   // ── Вспомогательные ──────────────────────────────────────────────────────
@@ -269,58 +218,6 @@ export default function AdminDashboard({ onLogout }) {
     );
   }
 
-  // ── Доступ запрещён ───────────────────────────────────────────────────────
-  if (accessDenied) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '80vh' }}>
-        <div className="glass-panel" style={{ maxWidth: 400, textAlign: 'center', padding: '3rem 2rem' }}>
-          <div style={{ color: 'var(--color-danger)', marginBottom: '1rem' }}>
-            <XCircle size={48} style={{ margin: '0 auto' }} />
-          </div>
-          <h2 style={{ marginBottom: '0.75rem' }}>Доступ запрещён</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-            Этот раздел доступен только разработчикам.
-          </p>
-          <button className="btn btn-secondary btn-block" onClick={handleSignOut}>
-            <LogOut size={16} /> Выйти
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Логин ─────────────────────────────────────────────────────────────────
-  if (!session) {
-    return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '80vh' }}>
-        <div className="glass-panel config-container animate-slide-up">
-          <div style={{ textAlign: 'center', marginBottom: '2rem' }}>
-            <div style={{ display: 'inline-flex', padding: '1rem', borderRadius: '50%', background: 'rgba(99,102,241,0.1)', color: 'var(--accent-color)', marginBottom: '1rem' }}>
-              <BarChart2 size={40} />
-            </div>
-            <h2 style={{ fontSize: '1.75rem', marginBottom: '0.5rem' }}>Dev Dashboard</h2>
-            <p style={{ color: 'var(--text-secondary)' }}>Только для разработчиков</p>
-          </div>
-          {authError && <p style={{ color: 'var(--color-danger)', fontSize: '0.875rem', marginBottom: '1rem', textAlign: 'center' }}>⚠️ {authError}</p>}
-          <button
-            className="btn btn-primary btn-block"
-            disabled={authLoading}
-            onClick={handleAuth}
-            style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.75rem', fontSize: '1rem', padding: '0.875rem' }}
-          >
-            <svg width="20" height="20" viewBox="0 0 48 48">
-              <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
-              <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
-              <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
-              <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
-            </svg>
-            {authLoading ? 'Перенаправление...' : 'Войти через Google'}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   // ── Дашборд ───────────────────────────────────────────────────────────────
   return (
     <div className="container animate-slide-up" style={{ paddingBottom: '5rem' }}>
@@ -331,7 +228,7 @@ export default function AdminDashboard({ onLogout }) {
           <h1 style={{ fontSize: '2rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <BarChart2 size={28} color="var(--accent-color)" /> Dev Dashboard
           </h1>
-          <p style={{ color: 'var(--text-secondary)' }}>Аналитика платформы · {session.user.email}</p>
+          <p style={{ color: 'var(--text-secondary)' }}>Аналитика платформы</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           {/* Переключатель периода */}
@@ -347,9 +244,6 @@ export default function AdminDashboard({ onLogout }) {
           </div>
           <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={fetchStats} disabled={statsLoading}>
             <RefreshCw size={15} style={{ animation: statsLoading ? 'spin 1s linear infinite' : 'none' }} />
-          </button>
-          <button className="btn btn-secondary" style={{ padding: '0.5rem 1rem', fontSize: '0.875rem' }} onClick={handleSignOut}>
-            <LogOut size={15} /> Выйти
           </button>
         </div>
       </div>
