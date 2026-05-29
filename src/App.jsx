@@ -4,6 +4,7 @@ import SupabaseConfig from './components/SupabaseConfig';
 import OwnerDashboard from './components/OwnerDashboard';
 import OperatorPanel from './components/OperatorPanel';
 import ClientPanel from './components/ClientPanel';
+import AdminDashboard from './components/AdminDashboard';
 import { Car, Shield, Clock, TrendingUp, QrCode, BarChart2, CheckCircle, ArrowRight, ChevronDown, Smartphone, Users, Zap, MapPin } from 'lucide-react';
 
 // ── Landing page sections ──────────────────────────────────────────────────
@@ -21,11 +22,9 @@ function Hero({ onEnter }) {
       position: 'relative',
       overflow: 'hidden',
     }}>
-      {/* Background glow blobs */}
       <div style={{ position: 'absolute', top: '-10%', left: '50%', transform: 'translateX(-50%)', width: '600px', height: '600px', borderRadius: '50%', background: 'radial-gradient(circle, rgba(99,102,241,0.18) 0%, transparent 70%)', pointerEvents: 'none' }} />
 
       <div style={{ position: 'relative', zIndex: 1, maxWidth: '760px' }}>
-        {/* Badge */}
         <div style={{ display: 'inline-flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(99,102,241,0.12)', border: '1px solid rgba(99,102,241,0.3)', borderRadius: '999px', padding: '0.35rem 1rem', fontSize: '0.8125rem', color: 'var(--accent-color)', marginBottom: '2rem', fontWeight: 600 }}>
           <Zap size={13} /> Электронная очередь для автомоек
         </div>
@@ -48,8 +47,6 @@ function Hero({ onEnter }) {
             Как это работает <ChevronDown size={16} />
           </a>
         </div>
-
-
       </div>
     </section>
   );
@@ -166,6 +163,8 @@ export default function App() {
       setBusinessId(idParam);
     } else if (roleParam === 'owner') {
       setRole('owner');
+    } else if (roleParam === 'admin') {
+      setRole('admin');
     } else {
       setRole('portal');
     }
@@ -219,10 +218,21 @@ export default function App() {
     );
   }
 
+  if (role === 'admin') {
+    return (
+      <>
+        <div className="navbar">
+          <div className="navbar-brand">🛠️ Dev Dashboard</div>
+          <button className="btn btn-secondary" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8125rem' }} onClick={() => window.location.search = ''}>В меню</button>
+        </div>
+        <AdminDashboard onLogout={() => setRole('portal')} />
+      </>
+    );
+  }
+
   // ── LANDING PAGE ──
   return (
     <div style={{ minHeight: '100vh' }}>
-      {/* Navbar */}
       <nav style={{ position: 'fixed', top: 0, left: 0, right: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '1rem 2rem', backdropFilter: 'blur(12px)', background: 'rgba(10,10,20,0.75)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontWeight: 800, fontSize: '1.05rem', fontFamily: 'var(--font-heading)' }}>
           <Car size={22} color="var(--accent-color)" /> SmartQueue
@@ -232,7 +242,6 @@ export default function App() {
         </button>
       </nav>
 
-      {/* Spacer for fixed nav */}
       <div style={{ height: '64px' }} />
 
       <Hero onEnter={goOwner} />
@@ -240,7 +249,6 @@ export default function App() {
       <Benefits />
       <CTA onEnter={goOwner} />
 
-      {/* Footer */}
       <footer style={{ textAlign: 'center', padding: '2rem', borderTop: '1px solid var(--border-color)', fontSize: '0.8125rem', color: 'var(--text-muted)' }}>
         Разработано для развертывания на Vercel с базой данных Supabase.
       </footer>
